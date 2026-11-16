@@ -1,0 +1,484 @@
+import { test, expect } from '@playwright/test';
+import {
+  AgentWsClient,
+  resetMockState,
+  setMockState,
+  inspectMockState,
+  IS_MOCK,
+} from './ws-client';
+
+test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
+  let client: AgentWsClient;
+
+  test.beforeEach(async () => {
+    await resetMockState();
+    client = new AgentWsClient();
+    await client.connect();
+  });
+
+  test.afterEach(async () => {
+    await client.close();
+  });
+
+  // =========================================================================
+  // 1. PROTOCOL ENVELOPE, HEALTH CHECK & AUDIT LOGGING RULES
+  // =========================================================================
+  test('01. /healthCheck returns 200, DB mode, camera status, and excludes success from SecurityLog', async () => {
+    const res = await client.send('/healthCheck');
+    expect(res.statusCode).toBe(200);
+    expect(res.path).toBe('/healthCheck');
+    expect(res.correlationID).toBeTruthy();
+    expect(res.timeTaken).toMatch(/^\d+ms$/);
+    expect(res.response.actionResult.code).toBe(900);
+    expect(res.response.databaseMode).toBe('DB');
+    expect(res.response.cameraStatus.cameraEnabled).toBe(true);
+
+    if (IS_MOCK) {
+      const state = await inspectMockState();
+      const hcLogs = state.securityLogs.filter((l: any) => l.actionPerformed === '/healthCheck');
+      expect(hcLogs.length).toBe(0);
+    }
+  });
+
+  test('02. /healthCheck failure is recorded in ErrorLog with error code 9502', async () => {
+    test.skip(!IS_MOCK, 'Requires mock failure injection');
+    const res = await client.send('/healthCheck', { simulateFailure: true });
+    expect(res.statusCode).toBe(400);
+    expect(res.response.errorInfo.code).toBe(9502);
+
+    const state = await inspectMockState();
+    expect(state.errorLogs.some((l: any) => l.actionPerformed === '/healthCheck' && l.errorCode === '9502')).toBe(true);
+  });
+
+  // =========================================================================
+  // 2. CREDENTIAL AUTHENTICATION (/authenticate/credentials)
+  // =========================================================================
+  test('03. /authenticate/credentials succeeds for regular employee and persists credentialRefId when isLogin=true', async () => {
+    const res = await client.send('/authenticate/credentials', {
+      employeeId: 'rt00001',
+      password: 'SecretPassword123',
+      isLogin: true,
+      isTempEmployee: false,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.response.actionResult.code).toBe(601);
+    expect(res.response.credentialType).toBe('credentials');
+    expect(res.response.credentialRefId).toBe(res.correlationID);
+    expect(res.response.userInfo.employeeId).toBe('rt00001');
+  });
+
+  test('04. /authenticate/credentials rejects invalid password with 6501 and missing fields with 9510', async () => {
+    const badPass = await client.send('/authenticate/credentials', {
+      employeeId: 'rt00001',
+      password: 'WrongPassword!',
+    });
+    expect(badPass.statusCode).toBe(400);
+    expect(badPass.response.errorInfo.code).toBe(6501);
+
+    const missing = await client.send('/authenticate/credentials', {
+      employeeId: 'rt00001',
+    });
+    expect(missing.statusCode).toBe(400);
+    expect(missing.response.errorInfo.code).toBe(9510);
+  });
+
+  test('05. /authenticate/credentials returns 6503 when IDP is unreachable', async () => {
+    test.skip(!IS_MOCK, 'Requires mock IDP fault injection');
+    await setMockState({ idpDown: true });
+    const res = await client.send('/authenticate/credentials', {
+      employeeId: 'rt00001',
+      password: 'SecretPassword123',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.response.errorInfo.code).toBe(6503);
+  });
+
+  // =========================================================================
+  // 3. TEMP EMPLOYEE REGISTRATION & BIOMETRIC ENROLLMENT
+  // =========================================================================
+  test('06. /register/tempEmployee creates temporary profile and authenticates with sponsorId when isLogin=true', async () => {
+    const tempId = 'T005900099';
+    const reg = await client.send('/register/tempEmployee', {
+      employeeId: tempId,
+      consentGiven: true,
+      firstName: 'John',
+      familyName: 'Doe',
+      middleName: 'M',
+      dob: '1990-01-01',
+      employeeRole: 'T',
+      sponserId: 'rt00001',
+      profileExpiryTimestamp: Math.floor(Date.now() / 1000) + 86400,
+    });
+    expect(reg.statusCode).toBe(200);
+    expect(reg.response.actionResult.code).toBe(900);
+
+    // Enroll biometrics using the tempEmployee registration correlationID
+    const bioReg = await client.send('/register/biometric', {
+      employeeId: tempId,
+      loginCorrelationID: reg.correlationID,
+      consentGiven: true,
+      consentVersion: 'v1.0',
+      state: 'MA',
+    });
+    expect(bioReg.statusCode).toBe(200);
+    expect(bioReg.response.actionResult.code).toBe(100);
+  });
+
+  test('07. /register/biometric validates mandatory fields (9510), unknown user (6500), and invalid loginCorrelationID', async () => {
+    const missing = await client.send('/register/biometric', { employeeId: 'rt00001' });
+    expect(missing.statusCode).toBe(400);
+    expect(missing.response.errorInfo.code).toBe(9510);
+
+    const unknownUser = await client.send('/register/biometric', {
+      employeeId: 'unknown_999',
+      loginCorrelationID: 'valid-login-cid-001',
+    });
+    expect(unknownUser.statusCode).toBe(400);
+    expect(unknownUser.response.errorInfo.code).toBe(6500);
+
+    const badLoginCid = await client.send('/register/biometric', {
+      employeeId: 'rt00001',
+      loginCorrelationID: 'non-existent-login-cid',
+    });
+    expect(badLoginCid.statusCode).toBe(400);
+    expect(badLoginCid.response.errorInfo.code).toBe(6500);
+  });
+
+  // =========================================================================
+  // 4. BIOMETRIC AUTHENTICATION (1:1, 1:N, PASSIVE DELAY, GUIDANCE, DIGITAL TWIN)
+  // =========================================================================
+  test('08. /authenticate/biometric 1:1 active scan succeeds with modelUsed and processingMs metrics', async () => {
+    const res = await client.send('/authenticate/biometric', {
+      employeeId: 'rt00001',
+      uiDelay: 0,
+      isLogin: true,
+      liveness: true,
+      liveness_reco: true,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.response.actionResult.code).toBe(102);
+    expect(res.response.credentialType).toBe('biometric');
+    expect(res.modelUsed).toBe('mbfv1');
+    expect(typeof res.processingMs).toBe('number');
+  });
+
+  test('09. /authenticate/biometric 1:N passive scan emits intermediate 1500 pending decision before 200 match', async () => {
+    test.skip(!IS_MOCK, 'Requires deterministic passive delay simulation');
+    const frames = await client.sendAndCollectAll('/authenticate/biometric', {
+      uiDelay: 2.5,
+      isLogin: false,
+    });
+    expect(frames.length).toBe(2);
+    expect(frames[0].response.actionResult.code).toBe(150);
+    expect(frames[0].response.errorInfo.code).toBe(1500);
+    expect(frames[1].statusCode).toBe(200);
+    expect(frames[1].response.actionResult.code).toBe(102);
+  });
+
+  test('10. /authenticate/biometric handles mismatch (1505), timeout (1504), and UI vision guidance translation', async () => {
+    test.skip(!IS_MOCK, 'Requires vision fault injection');
+    const mismatch = await client.send('/authenticate/biometric', {
+      employeeId: 'rt00001',
+      uiDelay: 0,
+      simulateFaceMismatch: true,
+    });
+    expect(mismatch.statusCode).toBe(400);
+    expect(mismatch.response.errorInfo.code).toBe(1505);
+
+    const timeout = await client.send('/authenticate/biometric', {
+      employeeId: 'rt00001',
+      uiDelay: 0,
+      simulateTimeout: true,
+    });
+    expect(timeout.response.errorInfo.code).toBe(1504);
+
+    const glasses = await client.send('/authenticate/biometric', {
+      employeeId: 'rt00001',
+      uiDelay: 0,
+      simulateVisionCode: 'Eyeglasses detected',
+    });
+    expect(glasses.response.errorInfo.code).toBe(1502);
+    expect(glasses.response.errorInfo.uiGuidance).toBe('Remove glasses');
+  });
+
+  test('11. Digital Twin detection triggers 1512 on 1:N or unverified 1:1, and clears after secondary auth', async () => {
+    test.skip(!IS_MOCK, 'Requires digital twin seeded user');
+    // 1:N match on a digital twin must demand secondary verification (1512)
+    const oneToN = await client.send('/authenticate/biometric', {
+      uiDelay: 0,
+      simulatedMatchedEmployeeId: 'twin_emp_01',
+    });
+    expect(oneToN.statusCode).toBe(400);
+    expect(oneToN.response.errorInfo.code).toBe(1512);
+
+    // 1:1 match without prior secondary verification must also return 1512
+    const oneToOneBefore = await client.send('/authenticate/biometric', {
+      employeeId: 'twin_emp_01',
+      uiDelay: 0,
+    });
+    expect(oneToOneBefore.statusCode).toBe(400);
+    expect(oneToOneBefore.response.errorInfo.code).toBe(1512);
+
+    // Complete secondary verification via credentials
+    const cred = await client.send('/authenticate/credentials', {
+      employeeId: 'twin_emp_01',
+      password: 'TwinPassword123',
+      isLogin: true,
+    });
+    expect(cred.statusCode).toBe(200);
+
+    // Now 1:1 biometric succeeds within periodic_interval_minutes
+    const oneToOneAfter = await client.send('/authenticate/biometric', {
+      employeeId: 'twin_emp_01',
+      uiDelay: 0,
+    });
+    expect(oneToOneAfter.statusCode).toBe(200);
+    expect(oneToOneAfter.response.actionResult.code).toBe(102);
+  });
+
+  // =========================================================================
+  // 5. BARCODE GENERATION & AUTHENTICATION (/register/barcode, /authenticate/barcode)
+  // =========================================================================
+  test('12. /register/barcode and /authenticate/barcode enforce 13-char BI prefix, PIN, case-insensitivity, and employeeId match', async () => {
+    const reg = await client.send('/register/barcode', {
+      employeeId: 'rt00001',
+      pin: '4354',
+      validity: 600,
+    });
+    expect(reg.statusCode).toBe(200);
+    expect(reg.response.actionResult.code).toBe(602);
+    const barcode: string = reg.response.barcodeData;
+    expect(barcode).toMatch(/^BI[A-Z0-9]{11}$/);
+    expect(barcode.length).toBe(13);
+
+    // Wrong PIN -> 6523
+    const wrongPin = await client.send('/authenticate/barcode', {
+      barcodeData: barcode,
+      pin: '0000',
+      employeeId: 'rt00001',
+    });
+    expect(wrongPin.statusCode).toBe(400);
+    expect(wrongPin.response.errorInfo.code).toBe(6523);
+
+    // Wrong employeeId -> 6524 (Oct 9, 2026 spec requirement)
+    const mismatchUser = await client.send('/authenticate/barcode', {
+      barcodeData: barcode,
+      pin: '4354',
+      employeeId: 'twin_emp_01',
+    });
+    expect(mismatchUser.statusCode).toBe(400);
+    expect(mismatchUser.response.errorInfo.code).toBe(6524);
+
+    // Valid scan (testing case-insensitivity via lowercase barcodeData)
+    const auth = await client.send('/authenticate/barcode', {
+      barcodeData: barcode.toLowerCase(),
+      pin: '4354',
+      employeeId: 'rt00001',
+      isLogin: true,
+    });
+    expect(auth.statusCode).toBe(200);
+    expect(auth.response.actionResult.code).toBe(603);
+    expect(auth.response.credentialType).toBe('barcode');
+  });
+
+  test('13. Expired barcode returns 6522', async () => {
+    const reg = await client.send('/register/barcode', {
+      employeeId: 'rt00001',
+      pin: '4354',
+      validity: -1, // Already expired
+    });
+    const auth = await client.send('/authenticate/barcode', {
+      barcodeData: reg.response.barcodeData,
+      pin: '4354',
+      employeeId: 'rt00001',
+    });
+    expect(auth.statusCode).toBe(400);
+    expect(auth.response.errorInfo.code).toBe(6522);
+  });
+
+  // =========================================================================
+  // 6. USERINFO, TOKEN REFRESH, CAMERA CONTROL, CONFIG, LOGS & FORGETME
+  // =========================================================================
+  test('14. /userinfo assigns store_id and workstation when assignStore=true', async () => {
+    const res = await client.send('/userinfo', {
+      employeeId: 'rt00001',
+      assignStore: true,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.response.userInfo.store_id).toBeTruthy();
+    expect(res.response.userInfo.workstation).toBeTruthy();
+  });
+
+  test('15. /user/token retrieves and auto-refreshes expired PING and SM tokens', async () => {
+    const res = await client.send('/user/token', {
+      employeeId: 'expired_emp_01',
+      tokenType: ['PING', 'SM'],
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.response.userTokens).toHaveLength(2);
+    expect(res.response.userTokens[0].type).toBe('PING');
+    expect(res.response.userTokens[1].type).toBe('SM');
+  });
+
+  test('16. /notify/bio-camera toggles camera ON/OFF and blocks biometric scan with 9520 when OFF', async () => {
+    test.skip(!IS_MOCK, 'Requires hardware toggle verification');
+    const offRes = await client.send('/notify/bio-camera', {
+      clientId: 'pos-01',
+      action: 'OFF',
+    });
+    expect(offRes.statusCode).toBe(200);
+    expect(offRes.response.actionResult.code).toBe(706);
+
+    const scanWhileOff = await client.send('/authenticate/biometric', {
+      employeeId: 'rt00001',
+      uiDelay: 0,
+    });
+    expect(scanWhileOff.statusCode).toBe(400);
+    expect(scanWhileOff.response.errorInfo.code).toBe(9520);
+
+    const onRes = await client.send('/notify/bio-camera', {
+      clientId: 'pos-01',
+      action: 'ON',
+    });
+    expect(onRes.statusCode).toBe(200);
+  });
+
+  test('17. /setConfiguration updates flags and triggers internal self-restart on critical keys', async () => {
+    const res = await client.send('/setConfiguration', {
+      configurations: {
+        FallBackAuthWithPinEnabled: 'N',
+        backend_url: 'https://api-prod.cvsauth.com',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.response.actionResult.code).toBe(900);
+
+    if (IS_MOCK) {
+      const state = await inspectMockState();
+      expect(state.restartCount).toBe(1);
+    }
+  });
+
+  test('18. /terminate/transaction rejects unknown targetCorrelationID with 9503', async () => {
+    const res = await client.send('/terminate/transaction', {
+      targetCorrelationID: 'non-existent-tx-id',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.response.errorInfo.code).toBe(9503);
+  });
+
+  test('19. /uploadLogs validates logType and syncs queued offline logs', async () => {
+    const badType = await client.send('/uploadLogs', { logType: 'invalid_type' });
+    expect(badType.statusCode).toBe(400);
+
+    const okUpload = await client.send('/uploadLogs', { logType: 'all' });
+    expect(okUpload.statusCode).toBe(200);
+    expect(okUpload.response.actionResult.code).toBe(900);
+  });
+
+  test('20. /forgetMe wipes user profile from cache and subsequent lookups return 6500', async () => {
+    const del = await client.send('/forgetMe', {
+      employeeId: 'rt00001',
+      deleteFaceId: 'true',
+    });
+    expect(del.statusCode).toBe(200);
+    expect(del.response.actionResult.code).toBe(900);
+
+    const after = await client.send('/userinfo', { employeeId: 'rt00001' });
+    expect(after.statusCode).toBe(400);
+    expect(after.response.errorInfo.code).toBe(6500);
+  });
+
+  // =========================================================================
+  // 7. EDGE & RESILIENCE MODES (HEADLESS 9500, DB->MEMORY FALLBACK, OFFLINE TEMP)
+  // =========================================================================
+  test('21. Non-graphical (Headless) mode returns 9500 for UI endpoints but allows PIN barcode & credentials', async () => {
+    test.skip(!IS_MOCK, 'Requires headless mode toggle');
+    await setMockState({ uiEnabled: false });
+
+    // UI biometric request fails with 9500
+    const bio = await client.send('/authenticate/biometric', {
+      employeeId: 'rt00001',
+      uiDelay: 0,
+    });
+    expect(bio.statusCode).toBe(400);
+    expect(bio.response.errorInfo.code).toBe(9500);
+
+    // Non-UI credential login still works
+    const cred = await client.send('/authenticate/credentials', {
+      employeeId: 'rt00001',
+      password: 'SecretPassword123',
+    });
+    expect(cred.statusCode).toBe(200);
+
+    // Barcode with PIN works in headless mode, without PIN fails with 9500
+    const reg = await client.send('/register/barcode', {
+      employeeId: 'rt00001',
+      pin: '4354',
+      validity: 300,
+    });
+    const noPin = await client.send('/authenticate/barcode', {
+      barcodeData: reg.response.barcodeData,
+    });
+    expect(noPin.response.errorInfo.code).toBe(9500);
+
+    const withPin = await client.send('/authenticate/barcode', {
+      barcodeData: reg.response.barcodeData,
+      pin: '4354',
+      employeeId: 'rt00001',
+    });
+    expect(withPin.statusCode).toBe(200);
+  });
+
+  test('22. Database corruption auto-switches Agent from DB mode to Memory mode without crashing', async () => {
+    test.skip(!IS_MOCK, 'Requires DB fault injection');
+    const failRes = await client.send('/authenticate/biometric', {
+      employeeId: 'rt00001',
+      uiDelay: 0,
+      simulateDbError: true,
+    });
+    expect(failRes.statusCode).toBe(400);
+    expect(failRes.response.errorInfo.code).toBe(9524);
+
+    // Health check reflects automatic fallback to Memory mode
+    const hc = await client.send('/healthCheck');
+    expect(hc.statusCode).toBe(200);
+    expect(hc.response.databaseMode).toBe('Memory');
+  });
+
+  test('23. Offline temporary registration & online storeIdMismatch revalidation', async () => {
+    test.skip(!IS_MOCK, 'Requires offline mode toggle');
+    await setMockState({ offlineMode: true });
+
+    const tempReg = await client.send('/register/tempEmployee', {
+      employeeId: 'OFFLINE_TEMP_01',
+      consentGiven: true,
+      firstName: 'Offline',
+      familyName: 'Associate',
+      sponserId: 'rt00001',
+    });
+    expect(tempReg.statusCode).toBe(200);
+
+    const bioEnroll = await client.send('/register/biometric', {
+      employeeId: 'OFFLINE_TEMP_01',
+      loginCorrelationID: tempReg.correlationID,
+    });
+    expect(bioEnroll.statusCode).toBe(200);
+
+    // Offline biometric auth succeeds
+    const offlineAuth = await client.send('/authenticate/biometric', {
+      employeeId: 'OFFLINE_TEMP_01',
+      uiDelay: 0,
+    });
+    expect(offlineAuth.statusCode).toBe(200);
+
+    // Reconnect online with store mismatch -> returns 1509 + storeIdMismatch: true
+    await setMockState({ offlineMode: false, storeIdMismatchOnRevalidate: true });
+    const onlineReval = await client.send('/authenticate/biometric', {
+      employeeId: 'OFFLINE_TEMP_01',
+      uiDelay: 0,
+    });
+    expect(onlineReval.response.errorInfo.code).toBe(1509);
+    expect(onlineReval.storeIdMismatch).toBe(true);
+  });
+});
