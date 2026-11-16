@@ -1,0 +1,3480 @@
+{
+	"info": {
+		"name": "PrivateID Edge — Regression",
+		"description": "Regression suite for the PrivateID edge component. GENERATED from src/selftest/ by scripts/generate-postman-collection.js — regenerate with `npm run qa:postman`, do not hand-edit folders 00–05.\n\nOrder of use: 00 Preflight → 01 store-safe contract → 02 (UAT) → 04 temp journey (UAT) → 05 self-test. 03 writes; non-production only.\n\nRun every folder twice: forwardToCloud=false (store offline) and forwardToCloud=true (online). qa/run-regression.sh does both.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Values that depend on the time of the run. Frozen into the file they would expire.",
+					"pm.variables.set(\"profileExpiryTime\", new Date(Date.now() + 86400000).toISOString());",
+					"pm.variables.set(\"expireAt\", String(Math.floor(Date.now() / 1000) + 86400));",
+					"if (!pm.variables.get(\"runId_qa\")) pm.variables.set(\"runId_qa\", \"qa-\" + Date.now().toString(36));"
+				]
+			}
+		}
+	],
+	"item": [
+		{
+			"name": "00 Preflight — what is this store actually running",
+			"description": "Run first, every time. Read-only, safe at a live store. config-status is the one that matters: remote config overrides .env at runtime and wins silently, so the flags in a file are not necessarily what the store is running. Check `source`, `store.edgeVersion` and `circuitBreaker.enabled` before trusting any later result.",
+			"item": [
+				{
+					"name": "config-status (effective runtime config)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-configstatus",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/config-status",
+						"description": "Effective flags and where they came from (attributes service, disk cache, or .env fallback)."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+									"var b = pm.response.json();",
+									"console.log(\"config source:\", b.source, \"edgeVersion:\", b.store && b.store.edgeVersion, \"breaker:\", b.circuitBreaker && b.circuitBreaker.enabled);",
+									"pm.test(\"config source is reported\", function () { pm.expect(b.source).to.exist; });"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "version (build identity)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-version",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/version",
+						"description": "Must match the build under test."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "health (edge liveness)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-health",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/health",
+						"description": "Edge-local liveness."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "health-idp (no API key — exempt)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-healthidp",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/health-idp",
+						"description": "Exempt from the API key guard, so it must answer with no key. Status is normalised fail-closed."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "api-key-status (enforcement state)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-apikeystatus",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/api-key-status",
+						"description": "Enforcement mode (warn/strict) and an inventory of keys seen per endpoint."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "01 Contract — store-safe (read-only, OK at a live store)",
+			"description": "Every endpoint marked storeSafe: read-only, no writes, nothing that disturbs a register mid-transaction. Same rows and same pass/fail policy as `npm run smoke:store`.",
+			"item": [
+				{
+					"name": "authenticate-barcode [store-safe, read-only]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-authenticate-barcode",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/authenticate-barcode",
+						"description": "Client: **agent**. Dispatch: mounted / local-first. store-safe, read-only.\n\nThe endpoint that 400'd in UAT. Agent body is {is_login_operation, store_id, barcode, pin} — no api_key.\n\nSource of truth: `src/selftest/endpoints.js` row `authenticate-barcode`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"barcode\": \"{{barcode}}\",\n  \"pin\": \"{{pin}}\",\n  \"store_id\": \"{{storeId}}\",\n  \"is_login_operation\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "authenticate-barcode — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-authenticate-barcode",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/authenticate-barcode",
+						"description": "Client: **agent**. Dispatch: mounted / local-first. store-safe, read-only.\n\nThe endpoint that 400'd in UAT. Agent body is {is_login_operation, store_id, barcode, pin} — no api_key.\n\nSource of truth: `src/selftest/endpoints.js` row `authenticate-barcode`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"barcode\": \"{{barcode}}\",\n  \"pin\": \"{{pin}}\",\n  \"store_id\": \"{{storeId}}\",\n  \"is_login_operation\": false,\n  \"api_key\": \"{{apiKey}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "users-with-barcodes [store-safe, read-only]",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-users-with-barcodes",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/users-with-barcodes?storeId={{storeId}}&workstationName={{workstation}}",
+						"description": "Client: **agent**. Dispatch: mounted / local-only (DB → flag, controller decides). store-safe, read-only.\n\nQuery is storeId + workstationName per the agent inventory. The Postman collection's ?timestamp= is stale.\n\nSource of truth: `src/selftest/endpoints.js` row `users-with-barcodes`."
+					}
+				},
+				{
+					"name": "authenticate-credentials [store-safe, read-only]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-authenticate-credentials",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/authenticate/credentials",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline authenticateHandler. store-safe, read-only.\n\nRead-only against a test employee; safe in store because it authenticates, it does not enrol.\n\nSource of truth: `src/selftest/endpoints.js` row `authenticate-credentials`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"password\": \"{{password}}\",\n  \"store_id\": \"{{storeId}}\",\n  \"is_login_operation\": false,\n  \"is_temp_employee\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "authenticate-credentials — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-authenticate-credentials",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/authenticate/credentials",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline authenticateHandler. store-safe, read-only.\n\nRead-only against a test employee; safe in store because it authenticates, it does not enrol.\n\nSource of truth: `src/selftest/endpoints.js` row `authenticate-credentials`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"password\": \"{{password}}\",\n  \"store_id\": \"{{storeId}}\",\n  \"is_login_operation\": false,\n  \"is_temp_employee\": false,\n  \"api_key\": \"{{apiKey}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "users [store-safe, read-only]",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-users",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/users?employeeId={{employeeId}}",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline getUserInfoController. store-safe, read-only.\n\nSource of truth: `src/selftest/endpoints.js` row `users`."
+					}
+				},
+				{
+					"name": "refreshToken [store-safe, read-only]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-refreshToken",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/refreshToken",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline refreshTokenHandler. store-safe, read-only.\n\nNot on the original list of 16, but the agent calls it. Its three jest suites are the ones whose incomplete logger mock hides 13 failing tests.\n\nSource of truth: `src/selftest/endpoints.js` row `refreshToken`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"tokenType\": \"PF\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "refreshToken — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-refreshToken",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/refreshToken",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline refreshTokenHandler. store-safe, read-only.\n\nNot on the original list of 16, but the agent calls it. Its three jest suites are the ones whose incomplete logger mock hides 13 failing tests.\n\nSource of truth: `src/selftest/endpoints.js` row `refreshToken`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"tokenType\": \"PF\",\n  \"api_key\": \"{{apiKey}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "health-idp [store-safe, read-only]",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-health-idp",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/health-idp",
+						"description": "Client: **agent**. Dispatch: api-key exempt; offline getHealthStatus. store-safe, read-only.\n\nExempt from the guard (API_KEY_EXEMPT_TERMINAL), so it must pass with no key too.\n\nSource of truth: `src/selftest/endpoints.js` row `health-idp`."
+					}
+				},
+				{
+					"name": "verify-credentials [store-safe, read-only]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-verify-credentials",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{uiBasePath}}/verify-credentials",
+						"description": "Client: **ui**. Dispatch: mounted / cloud-first. store-safe, read-only.\n\nKeyless. See generate-barcode.\n\nSource of truth: `src/selftest/endpoints.js` row `verify-credentials`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"correlationID\": \"smoke-correlation-id\",\n  \"path\": \"/verify-credentials\",\n  \"employeeId\": \"{{employeeId}}\",\n  \"password\": \"{{password}}\",\n  \"isLogin\": false,\n  \"isTempEmployee\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "verify-barcode [store-safe, read-only]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-verify-barcode",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{uiBasePath}}/verify-barcode",
+						"description": "Client: **ui**. Dispatch: mounted / cloud-first. store-safe, read-only.\n\nKeyless. See generate-barcode.\n\nSource of truth: `src/selftest/endpoints.js` row `verify-barcode`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"correlationID\": \"smoke-correlation-id\",\n  \"path\": \"/verify-barcode\",\n  \"barcodeData\": \"{{barcode}}\",\n  \"pin\": \"{{pin}}\",\n  \"isLogin\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "logs-download [store-safe, read-only]",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-logs-download",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/logs/download?type=info&tail=5",
+						"description": "Client: **support**. Dispatch: mounted / no DB. store-safe, read-only.\n\nSupport only. /logs is NOT in the exempt list, so it needs a key — confirm real support usage, or it is a third endpoint that 401s under strict.\n\nSource of truth: `src/selftest/endpoints.js` row `logs-download`."
+					}
+				}
+			],
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"// Contract policy, generated from classify() in src/selftest/runner.js. A pass means the edge accepted",
+							"// what a real client sends — not that the business result is right. A 400 'Barcode not found' or a 5xx",
+							"// from a missing backend is the endpoint working against data that does not exist here, and passes.",
+							"var SCHEMA_REJECTION = /is not allowed|is required|must be|Invalid request|Invalid embedding/i;",
+							"var ROUTING_404 = /Unable to find your request/i;",
+							"var MESSAGE_KEYS = { message: 1, error: 1, description: 1 };",
+							"function messageOf(body, depth) {",
+							"\tdepth = depth || 0;",
+							"\tif (body == null || depth > 4) return \"\";",
+							"\tif (typeof body === \"string\") return body;",
+							"\tif (Array.isArray(body)) return body.map(function (v) { return messageOf(v, depth + 1); }).filter(Boolean).join(\" | \");",
+							"\tif (typeof body !== \"object\") return \"\";",
+							"\tvar parts = [];",
+							"\tObject.keys(body).forEach(function (key) {",
+							"\t\tvar value = body[key];",
+							"\t\tif (typeof value === \"string\") { if (MESSAGE_KEYS[key]) parts.push(value); }",
+							"\t\telse if (Array.isArray(value)) {",
+							"\t\t\tif (MESSAGE_KEYS[key]) value.forEach(function (v) { if (typeof v === \"string\") parts.push(v); });",
+							"\t\t\tvalue.forEach(function (item) { if (item && typeof item === \"object\") { var n = messageOf(item, depth + 1); if (n) parts.push(n); } });",
+							"\t\t} else if (value && typeof value === \"object\") { var n = messageOf(value, depth + 1); if (n) parts.push(n); }",
+							"\t});",
+							"\treturn parts.filter(function (p, i) { return parts.indexOf(p) === i; }).join(\" | \");",
+							"}",
+							"var body; try { body = pm.response.json(); } catch (e) { body = pm.response.text(); }",
+							"var message = messageOf(body);",
+							"var status = pm.response.code;",
+							"var strict = pm.variables.get(\"apiKeyEnforcement\") === \"strict\";",
+							"var keyless = pm.request.headers.has(\"X-Api-Key\") === false;",
+							"pm.test(\"contract: route is mounted (no Express 404)\", function () {",
+							"\tpm.expect(status === 404 && ROUTING_404.test(message), 'no route matched: ' + message).to.equal(false);",
+							"});",
+							"pm.test(\"contract: no auth rejection for this client profile\", function () {",
+							"\tif (strict && keyless) return; // under strict, the keyless UI profile is expected to 401",
+							"\tpm.expect([401, 403], status + ' ' + message).to.not.include(status);",
+							"});",
+							"pm.test(\"contract: valid body not refused by schema\", function () {",
+							"\tpm.expect(status === 400 && SCHEMA_REJECTION.test(message), 'schema rejection: ' + message).to.equal(false);",
+							"});"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "02 Contract — non-destructive extras (UAT)",
+			"description": "Read-only endpoints that are not store-safe — predict-embedding mostly. Right for UAT, where reading real data is fine. Together with 01 this is `npm run smoke:uat`.",
+			"item": [
+				{
+					"name": "predict-embedding [read-only]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-predict-embedding",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/predict-embedding",
+						"description": "Client: **agent**. Dispatch: mounted / local-first. read-only.\n\nThe agent genuinely sends `api_key` in this body as well as the header.\n\n1:N face auth. Body carries api_key AND the header does. Needs real embeddings to reach the matcher.\n\nSource of truth: `src/selftest/endpoints.js` row `predict-embedding`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"embeddings_map\": {\n    \"mbfv1\": \"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\",\n    \"res100\": \"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\"\n  },\n  \"employeeId\": \"{{employeeId}}\",\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "predict-embedding — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-predict-embedding",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/predict-embedding",
+						"description": "Client: **agent**. Dispatch: mounted / local-first. read-only.\n\nThe agent genuinely sends `api_key` in this body as well as the header.\n\n1:N face auth. Body carries api_key AND the header does. Needs real embeddings to reach the matcher.\n\nSource of truth: `src/selftest/endpoints.js` row `predict-embedding`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"embeddings_map\": {\n    \"mbfv1\": \"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\",\n    \"res100\": \"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\"\n  },\n  \"employeeId\": \"{{employeeId}}\",\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				}
+			],
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"// Contract policy, generated from classify() in src/selftest/runner.js. A pass means the edge accepted",
+							"// what a real client sends — not that the business result is right. A 400 'Barcode not found' or a 5xx",
+							"// from a missing backend is the endpoint working against data that does not exist here, and passes.",
+							"var SCHEMA_REJECTION = /is not allowed|is required|must be|Invalid request|Invalid embedding/i;",
+							"var ROUTING_404 = /Unable to find your request/i;",
+							"var MESSAGE_KEYS = { message: 1, error: 1, description: 1 };",
+							"function messageOf(body, depth) {",
+							"\tdepth = depth || 0;",
+							"\tif (body == null || depth > 4) return \"\";",
+							"\tif (typeof body === \"string\") return body;",
+							"\tif (Array.isArray(body)) return body.map(function (v) { return messageOf(v, depth + 1); }).filter(Boolean).join(\" | \");",
+							"\tif (typeof body !== \"object\") return \"\";",
+							"\tvar parts = [];",
+							"\tObject.keys(body).forEach(function (key) {",
+							"\t\tvar value = body[key];",
+							"\t\tif (typeof value === \"string\") { if (MESSAGE_KEYS[key]) parts.push(value); }",
+							"\t\telse if (Array.isArray(value)) {",
+							"\t\t\tif (MESSAGE_KEYS[key]) value.forEach(function (v) { if (typeof v === \"string\") parts.push(v); });",
+							"\t\t\tvalue.forEach(function (item) { if (item && typeof item === \"object\") { var n = messageOf(item, depth + 1); if (n) parts.push(n); } });",
+							"\t\t} else if (value && typeof value === \"object\") { var n = messageOf(value, depth + 1); if (n) parts.push(n); }",
+							"\t});",
+							"\treturn parts.filter(function (p, i) { return parts.indexOf(p) === i; }).join(\" | \");",
+							"}",
+							"var body; try { body = pm.response.json(); } catch (e) { body = pm.response.text(); }",
+							"var message = messageOf(body);",
+							"var status = pm.response.code;",
+							"var strict = pm.variables.get(\"apiKeyEnforcement\") === \"strict\";",
+							"var keyless = pm.request.headers.has(\"X-Api-Key\") === false;",
+							"pm.test(\"contract: route is mounted (no Express 404)\", function () {",
+							"\tpm.expect(status === 404 && ROUTING_404.test(message), 'no route matched: ' + message).to.equal(false);",
+							"});",
+							"pm.test(\"contract: no auth rejection for this client profile\", function () {",
+							"\tif (strict && keyless) return; // under strict, the keyless UI profile is expected to 401",
+							"\tpm.expect([401, 403], status + ' ' + message).to.not.include(status);",
+							"});",
+							"pm.test(\"contract: valid body not refused by schema\", function () {",
+							"\tpm.expect(status === 400 && SCHEMA_REJECTION.test(message), 'schema rejection: ' + message).to.equal(false);",
+							"});"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "03 Contract — WRITES (non-production only)",
+			"description": "Enrols, registers, deletes. Non-production stores only, with test data in the environment. Enrolment is pinned to `enrollEmployeeId`, which must be T + 9 digits; the request refuses to send otherwise.",
+			"item": [
+				{
+					"name": "embedding [WRITES]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-embedding",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/embedding",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline saveEmbedding. WRITES.\n\nThe agent genuinely sends `api_key` in this body as well as the header.\n\nEnrolment. Writes a user + embeddings.\n\nSource of truth: `src/selftest/endpoints.js` row `embedding`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"employeeId\": \"{{enrollEmployeeId}}\",\n  \"embeddings_map\": {\n    \"mbfv1\": \"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\",\n    \"res100\": \"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\"\n  },\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var id = pm.variables.get(\"enrollEmployeeId\");",
+									"if (!/^T\\d{9}$/.test(String(id))) {",
+									"\tthrow new Error(\"Refusing to enrol a face onto \\\"\" + id + \"\\\": it replaces that employee's face. enrollEmployeeId must be T + 9 digits.\");",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "embedding — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-embedding",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/embedding",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline saveEmbedding. WRITES.\n\nThe agent genuinely sends `api_key` in this body as well as the header.\n\nEnrolment. Writes a user + embeddings.\n\nSource of truth: `src/selftest/endpoints.js` row `embedding`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"employeeId\": \"{{enrollEmployeeId}}\",\n  \"embeddings_map\": {\n    \"mbfv1\": \"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\",\n    \"res100\": \"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\"\n  },\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var id = pm.variables.get(\"enrollEmployeeId\");",
+									"if (!/^T\\d{9}$/.test(String(id))) {",
+									"\tthrow new Error(\"Refusing to enrol a face onto \\\"\" + id + \"\\\": it replaces that employee's face. enrollEmployeeId must be T + 9 digits.\");",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "delete-embedding [WRITES]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-delete-embedding",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/delete-embedding",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline deleteEmbedding. WRITES.\n\nThe agent genuinely sends `api_key` in this body as well as the header.\n\nBody is exactly {api_key, uuid} (rest_api.cpp:346).\n\nSource of truth: `src/selftest/endpoints.js` row `delete-embedding`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"uuid\": \"{{uuid}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "delete-embedding — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-delete-embedding",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/delete-embedding",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline deleteEmbedding. WRITES.\n\nThe agent genuinely sends `api_key` in this body as well as the header.\n\nBody is exactly {api_key, uuid} (rest_api.cpp:346).\n\nSource of truth: `src/selftest/endpoints.js` row `delete-embedding`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"uuid\": \"{{uuid}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "register-barcode [WRITES]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-register-barcode",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/register-barcode",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline registerBarcodeHandler. WRITES.\n\nSource of truth: `src/selftest/endpoints.js` row `register-barcode`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"store_id\": \"{{storeId}}\",\n  \"barcode\": \"{{barcode}}\",\n  \"pin\": \"{{pin}}\",\n  \"expire_at\": 1861299864,\n  \"failed_attempts\": 0\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "register-barcode — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-register-barcode",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/register-barcode",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline registerBarcodeHandler. WRITES.\n\nSource of truth: `src/selftest/endpoints.js` row `register-barcode`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"store_id\": \"{{storeId}}\",\n  \"barcode\": \"{{barcode}}\",\n  \"pin\": \"{{pin}}\",\n  \"expire_at\": 1861299864,\n  \"failed_attempts\": 0,\n  \"api_key\": \"{{apiKey}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "register-temp-employee [WRITES]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-register-temp-employee",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/register-temp-employee",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline tempEmployeeHandler. WRITES.\n\nSource of truth: `src/selftest/endpoints.js` row `register-temp-employee`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{fixtureTempEmployeeId}}\",\n  \"password\": \"{{pin}}\",\n  \"consentGiven\": true,\n  \"firstName\": \"Smoke\",\n  \"familyName\": \"Test\",\n  \"employeeRole\": \"T\",\n  \"profileExpiryTime\": \"{{profileExpiryTime}}\",\n  \"sponserId\": \"rt00002\",\n  \"license\": [\n    {\n      \"expirationDate\": null,\n      \"licenseNumber\": \"RX1002345\",\n      \"state\": \"CA\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "register-temp-employee — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-register-temp-employee",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/register-temp-employee",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline tempEmployeeHandler. WRITES.\n\nSource of truth: `src/selftest/endpoints.js` row `register-temp-employee`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{fixtureTempEmployeeId}}\",\n  \"password\": \"{{pin}}\",\n  \"consentGiven\": true,\n  \"firstName\": \"Smoke\",\n  \"familyName\": \"Test\",\n  \"employeeRole\": \"T\",\n  \"profileExpiryTime\": \"{{profileExpiryTime}}\",\n  \"sponserId\": \"rt00002\",\n  \"license\": [\n    {\n      \"expirationDate\": null,\n      \"licenseNumber\": \"RX1002345\",\n      \"state\": \"CA\"\n    }\n  ],\n  \"api_key\": \"{{apiKey}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "update-correlation [WRITES]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-update-correlation",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/update-correlation",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline updateCorrelationHandler. WRITES.\n\nSource of truth: `src/selftest/endpoints.js` row `update-correlation`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"correlation_id_ref\": \"smoke-correlation-id\",\n  \"credential_type\": \"credentials\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "update-correlation — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-update-correlation",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/update-correlation",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; offline updateCorrelationHandler. WRITES.\n\nSource of truth: `src/selftest/endpoints.js` row `update-correlation`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"correlation_id_ref\": \"smoke-correlation-id\",\n  \"credential_type\": \"credentials\",\n  \"api_key\": \"{{apiKey}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "syncLogs [WRITES]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-syncLogs",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/syncLogs",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; refused with 503 when it cannot be forwarded, never stored locally. WRITES.\n\nForwards log records to central. Refused with 503 when it cannot be forwarded — deliberately not written to the store, since there is no upsync. Excluded from the store smoke as it is not read-only.\n\nSource of truth: `src/selftest/endpoints.js` row `syncLogs`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"table_name\": \"ErrorLog\",\n  \"records\": [\n    {\n      \"actionPerformed\": \"/authenticate/biometric\",\n      \"cvs-store-os-agent-version\": \"{{agentVersion}}\",\n      \"cvs_correlation_id\": \"smoke-correlation-id\",\n      \"employeeId\": \"{{employeeId}}\",\n      \"ipAddress\": \"192.168.1.38\",\n      \"errorTimestamp\": \"2026-08-09 10:04:40.833\",\n      \"errorCode\": \"1506\",\n      \"errorMesssage\": \"User not found\",\n      \"logTimestamp\": 1770045880833,\n      \"machineId\": \"smoke-test-machine\",\n      \"storeId\": \"{{storeId}}\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "syncLogs — api_key in body probe",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-syncLogs",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/syncLogs",
+						"description": "Client: **agent**. Dispatch: catch-all → proxy; refused with 503 when it cannot be forwarded, never stored locally. WRITES.\n\nForwards log records to central. Refused with 503 when it cannot be forwarded — deliberately not written to the store, since there is no upsync. Excluded from the store smoke as it is not read-only.\n\nSource of truth: `src/selftest/endpoints.js` row `syncLogs`.\n\nOutage probe: the same request with `api_key` added to the body. A closed Joi schema that rejects it is the bug that took down barcode auth for ten days.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"table_name\": \"ErrorLog\",\n  \"records\": [\n    {\n      \"actionPerformed\": \"/authenticate/biometric\",\n      \"cvs-store-os-agent-version\": \"{{agentVersion}}\",\n      \"cvs_correlation_id\": \"smoke-correlation-id\",\n      \"employeeId\": \"{{employeeId}}\",\n      \"ipAddress\": \"192.168.1.38\",\n      \"errorTimestamp\": \"2026-08-09 10:04:40.833\",\n      \"errorCode\": \"1506\",\n      \"errorMesssage\": \"User not found\",\n      \"logTimestamp\": 1770045880833,\n      \"machineId\": \"smoke-test-machine\",\n      \"storeId\": \"{{storeId}}\"\n    }\n  ],\n  \"api_key\": \"{{apiKey}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				},
+				{
+					"name": "generate-barcode [WRITES]",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runId_qa}}-generate-barcode",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{uiBasePath}}/generate-barcode",
+						"description": "Client: **ui**. Dispatch: mounted / cloud-first. WRITES.\n\nKeyless. 401s under API_KEY_ENFORCEMENT=strict — pinned in the strict block.\n\nSource of truth: `src/selftest/endpoints.js` row `generate-barcode`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{employeeId}}\",\n  \"pin\": \"{{pin}}\",\n  \"validity\": 86400,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					}
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"var target = String(pm.variables.get(\"targetEnvironment\") || \"\").toLowerCase();",
+							"if (target !== \"uat\" && target !== \"dev\" && target !== \"local\") {",
+							"\tpm.variables.set(\"edgeBase\", \"http://write-guard-refused.invalid\");",
+							"\tpm.execution.setNextRequest(null);",
+							"\tthrow new Error(\"REFUSED: this folder WRITES test data. Set targetEnvironment to uat, dev or local (it is \\\"\" + target + \"\\\"). Never run it against a production store.\");",
+							"}"
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"// Contract policy, generated from classify() in src/selftest/runner.js. A pass means the edge accepted",
+							"// what a real client sends — not that the business result is right. A 400 'Barcode not found' or a 5xx",
+							"// from a missing backend is the endpoint working against data that does not exist here, and passes.",
+							"var SCHEMA_REJECTION = /is not allowed|is required|must be|Invalid request|Invalid embedding/i;",
+							"var ROUTING_404 = /Unable to find your request/i;",
+							"var MESSAGE_KEYS = { message: 1, error: 1, description: 1 };",
+							"function messageOf(body, depth) {",
+							"\tdepth = depth || 0;",
+							"\tif (body == null || depth > 4) return \"\";",
+							"\tif (typeof body === \"string\") return body;",
+							"\tif (Array.isArray(body)) return body.map(function (v) { return messageOf(v, depth + 1); }).filter(Boolean).join(\" | \");",
+							"\tif (typeof body !== \"object\") return \"\";",
+							"\tvar parts = [];",
+							"\tObject.keys(body).forEach(function (key) {",
+							"\t\tvar value = body[key];",
+							"\t\tif (typeof value === \"string\") { if (MESSAGE_KEYS[key]) parts.push(value); }",
+							"\t\telse if (Array.isArray(value)) {",
+							"\t\t\tif (MESSAGE_KEYS[key]) value.forEach(function (v) { if (typeof v === \"string\") parts.push(v); });",
+							"\t\t\tvalue.forEach(function (item) { if (item && typeof item === \"object\") { var n = messageOf(item, depth + 1); if (n) parts.push(n); } });",
+							"\t\t} else if (value && typeof value === \"object\") { var n = messageOf(value, depth + 1); if (n) parts.push(n); }",
+							"\t});",
+							"\treturn parts.filter(function (p, i) { return parts.indexOf(p) === i; }).join(\" | \");",
+							"}",
+							"var body; try { body = pm.response.json(); } catch (e) { body = pm.response.text(); }",
+							"var message = messageOf(body);",
+							"var status = pm.response.code;",
+							"var strict = pm.variables.get(\"apiKeyEnforcement\") === \"strict\";",
+							"var keyless = pm.request.headers.has(\"X-Api-Key\") === false;",
+							"pm.test(\"contract: route is mounted (no Express 404)\", function () {",
+							"\tpm.expect(status === 404 && ROUTING_404.test(message), 'no route matched: ' + message).to.equal(false);",
+							"});",
+							"pm.test(\"contract: no auth rejection for this client profile\", function () {",
+							"\tif (strict && keyless) return; // under strict, the keyless UI profile is expected to 401",
+							"\tpm.expect([401, 403], status + ' ' + message).to.not.include(status);",
+							"});",
+							"pm.test(\"contract: valid body not refused by schema\", function () {",
+							"\tpm.expect(status === 400 && SCHEMA_REJECTION.test(message), 'schema rejection: ' + message).to.equal(false);",
+							"});"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "04 Journey — temp employee end to end (WRITES, UAT/non-prod)",
+			"description": "One fresh temp employee per run, walked through the lifecycle a store actually performs: register → local credential auth → face enrolment on both models → 1:1 and 1:N match on each → cross-model negative → barcode register → barcode auth → roster → lookup → the SOS UI's keyless fallback (verify-credentials, generate-barcode, verify-barcode). Needs no IDP and no real associate. Run the whole folder in order; it stops at the first failed prerequisite. Run once with forwardToCloud=false (store offline) and once with true (online).",
+			"item": [
+				{
+					"name": "01 health-idp (before, temp)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-01",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/health-idp",
+						"description": "Liveness before anything else. If this is not answering, every later failure is noise.\n\nSource of truth: `src/selftest/journey.js` step `health-idp (before, temp)`."
+					},
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Per-run identity, mirroring runJourney() in src/selftest/journeyRunner.js. A fresh temp employee,",
+									"// barcode and face every run: the duplicate-face guard correctly refuses a face that is already enrolled.",
+									"var runToken = Date.now().toString(36);",
+									"function hashMod(text, mod) { var h = 0; for (var i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) % mod; return h; }",
+									"function edgeFace(seed) {\n\tvar state = seed >>> 0;\n\tvar next = function () {\n\t\tstate = (state + 0x6d2b79f5) >>> 0;\n\t\tvar t = state;\n\t\tt = Math.imul(t ^ (t >>> 15), t | 1);\n\t\tt ^= t + Math.imul(t ^ (t >>> 7), t | 61);\n\t\treturn ((t ^ (t >>> 14)) >>> 0) / 4294967296;\n\t};\n\tvar floats = new Float32Array(512);\n\tfor (var i = 0; i < 512; i++) floats[i] = next() * 2 - 1;\n\tvar bytes = new Uint8Array(floats.buffer);\n\tvar A = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\";\n\tvar out = \"\";\n\tfor (var j = 0; j < bytes.length; j += 3) {\n\t\tvar b0 = bytes[j], b1 = bytes[j + 1], b2 = bytes[j + 2];\n\t\tout += A[b0 >> 2] + A[((b0 & 3) << 4) | ((b1 === undefined ? 0 : b1) >> 4)];\n\t\tout += b1 === undefined ? \"=\" : A[((b1 & 15) << 2) | ((b2 === undefined ? 0 : b2) >> 6)];\n\t\tout += b2 === undefined ? \"=\" : A[b2 & 63];\n\t}\n\treturn out;\n}",
+									"pm.variables.set(\"tempEmployeeId\", \"T\" + String(hashMod(runToken, 1000000000)).padStart(9, \"0\"));",
+									"pm.variables.set(\"tempBarcode\", \"TMPB\" + runToken.toUpperCase().slice(-9));",
+									"var faceSeed = 1000 + hashMod(runToken, 100000);",
+									"pm.variables.set(\"faceMbfv1\", edgeFace(faceSeed));",
+									"pm.variables.set(\"faceRes100\", edgeFace(faceSeed + 1));",
+									"pm.variables.set(\"runCorrelationId\", \"qa-journey-\" + runToken);",
+									"pm.variables.set(\"tempEnrolledUuid\", \"\");",
+									"pm.variables.set(\"tempGeneratedBarcode\", \"\");",
+									"pm.variables.set(\"tempRosterBarcodeAfterGenerate\", \"\");",
+									"console.log(\"journey run\", runToken, \"temp employee\", pm.variables.get(\"tempEmployeeId\"));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: health-idp (before, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "02 register-temp-employee",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-02",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/register-temp-employee",
+						"description": "Creates the account. Everything below depends on it, and a fresh id each run keeps re-runs independent.\n\nSource of truth: `src/selftest/journey.js` step `register-temp-employee`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"password\": \"{{pin}}\",\n  \"consentGiven\": true,\n  \"firstName\": \"Smoke\",\n  \"familyName\": \"Temp\",\n  \"middleName\": \"M\",\n  \"dob\": \"1990-01-01\",\n  \"employeeRole\": \"T\",\n  \"profileExpiryTime\": \"{{profileExpiryTime}}\",\n  \"sponserId\": \"rt00002\",\n  \"license\": [\n    {\n      \"expirationDate\": null,\n      \"licenseNumber\": \"RX1002345\",\n      \"state\": \"CA\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: register-temp-employee\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "03 authenticate/credentials (temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-03",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/authenticate/credentials",
+						"description": "The only authentication path that needs no IDP at all — the account is checked locally, not against Ping.\n\nSource of truth: `src/selftest/journey.js` step `authenticate/credentials (temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"password\": \"{{pin}}\",\n  \"is_temp_employee\": true,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: authenticate/credentials (temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "04 embedding (enrol, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-04",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/embedding",
+						"description": "Enrols the temp employee's own face, both models, in both modes. Needs the register step's profileExpiryTime to be in the future.\n\nSource of truth: `src/selftest/journey.js` step `embedding (enrol, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"embeddings_map\": {\n    \"mbfv1\": \"{{faceMbfv1}}\",\n    \"res100\": \"{{faceRes100}}\"\n  },\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"var b = pm.response.json();",
+									"if (b && b.uuid) pm.variables.set(\"tempEnrolledUuid\", b.uuid);",
+									"pm.test(\"enrolment returned a uuid\", function () { pm.expect(b.uuid, JSON.stringify(b)).to.be.a(\"string\"); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: embedding (enrol, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "05 predict-embedding (1:1, mbfv1, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-05",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/predict-embedding",
+						"description": "Proves the temp employee's mbfv1 enrolment is findable and resolves to the uuid it created.\n\nSource of truth: `src/selftest/journey.js` step `predict-embedding (1:1, mbfv1, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"embeddings_map\": {\n    \"mbfv1\": \"{{faceMbfv1}}\"\n  },\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"var b = pm.response.json();",
+									"var enrolled = pm.variables.get(\"tempEnrolledUuid\");",
+									"pm.test(\"matched the enrolled identity\", function () {",
+									"\tpm.expect(b.uuid, \"no match\").to.be.a(\"string\");",
+									"\tif (enrolled) pm.expect(b.uuid).to.equal(enrolled);",
+									"});",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: predict-embedding (1:1, mbfv1, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "06 predict-embedding (1:1, res100, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-06",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/predict-embedding",
+						"description": "Proves the temp employee's res100 enrolment is findable and resolves to the uuid it created.\n\nSource of truth: `src/selftest/journey.js` step `predict-embedding (1:1, res100, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"embeddings_map\": {\n    \"res100\": \"{{faceRes100}}\"\n  },\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"var b = pm.response.json();",
+									"var enrolled = pm.variables.get(\"tempEnrolledUuid\");",
+									"pm.test(\"matched the enrolled identity\", function () {",
+									"\tpm.expect(b.uuid, \"no match\").to.be.a(\"string\");",
+									"\tif (enrolled) pm.expect(b.uuid).to.equal(enrolled);",
+									"});",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: predict-embedding (1:1, res100, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "07 predict-embedding (1:N, mbfv1, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-07",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/predict-embedding",
+						"description": "Proves a blind search on mbfv1 alone finds this temp employee among every user in the store, not merely that a named lookup confirms them.\n\nSource of truth: `src/selftest/journey.js` step `predict-embedding (1:N, mbfv1, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"embeddings_map\": {\n    \"mbfv1\": \"{{faceMbfv1}}\"\n  },\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"var b = pm.response.json();",
+									"var enrolled = pm.variables.get(\"tempEnrolledUuid\");",
+									"pm.test(\"matched the enrolled identity\", function () {",
+									"\tpm.expect(b.uuid, \"no match\").to.be.a(\"string\");",
+									"\tif (enrolled) pm.expect(b.uuid).to.equal(enrolled);",
+									"});",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: predict-embedding (1:N, mbfv1, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "08 predict-embedding (1:N, res100, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-08",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/predict-embedding",
+						"description": "Proves a blind search on res100 alone finds this temp employee among every user in the store, not merely that a named lookup confirms them.\n\nSource of truth: `src/selftest/journey.js` step `predict-embedding (1:N, res100, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"embeddings_map\": {\n    \"res100\": \"{{faceRes100}}\"\n  },\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"var b = pm.response.json();",
+									"var enrolled = pm.variables.get(\"tempEnrolledUuid\");",
+									"pm.test(\"matched the enrolled identity\", function () {",
+									"\tpm.expect(b.uuid, \"no match\").to.be.a(\"string\");",
+									"\tif (enrolled) pm.expect(b.uuid).to.equal(enrolled);",
+									"});",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: predict-embedding (1:N, res100, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "09 predict-embedding (mbfv1 must NOT match the other model's vector, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-09",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/predict-embedding",
+						"description": "Guards against cross-model matching: without this, a mbfv1 match could be coming from the other model's stored embedding.\n\nSource of truth: `src/selftest/journey.js` step `predict-embedding (mbfv1 must NOT match the other model's vector, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"embeddings_map\": {\n    \"mbfv1\": \"{{faceRes100}}\"\n  },\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var b = {}; try { b = pm.response.json(); } catch (e) {}",
+									"var enrolled = pm.variables.get(\"tempEnrolledUuid\");",
+									"pm.test(\"does NOT match the other model's vector\", function () {",
+									"\tpm.expect(Boolean(b.uuid && enrolled && b.uuid === enrolled), 'cross-model match — the comparison is not using this model').to.equal(false);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "10 predict-embedding (res100 must NOT match the other model's vector, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-10",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/predict-embedding",
+						"description": "Guards against cross-model matching: without this, a res100 match could be coming from the other model's stored embedding.\n\nSource of truth: `src/selftest/journey.js` step `predict-embedding (res100 must NOT match the other model's vector, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"api_key\": \"{{apiKey}}\",\n  \"embeddings_map\": {\n    \"res100\": \"{{faceMbfv1}}\"\n  },\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"is_login_operation\": false,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var b = {}; try { b = pm.response.json(); } catch (e) {}",
+									"var enrolled = pm.variables.get(\"tempEnrolledUuid\");",
+									"pm.test(\"does NOT match the other model's vector\", function () {",
+									"\tpm.expect(Boolean(b.uuid && enrolled && b.uuid === enrolled), 'cross-model match — the comparison is not using this model').to.equal(false);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "11 register-barcode (temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-11",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/register-barcode",
+						"description": "The credential a temp employee actually uses at a register.\n\nSource of truth: `src/selftest/journey.js` step `register-barcode (temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"store_id\": \"{{storeId}}\",\n  \"barcode\": \"{{tempBarcode}}\",\n  \"pin\": \"{{pin}}\",\n  \"expire_at\": {{expireAt}},\n  \"failed_attempts\": 0\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: register-barcode (temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "12 authenticate-barcode (temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-12",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/authenticate-barcode",
+						"description": "Scans the barcode registered above. This is the temp employee's POS path, and it works in both modes.\n\nSource of truth: `src/selftest/journey.js` step `authenticate-barcode (temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"barcode\": \"{{tempBarcode}}\",\n  \"pin\": \"{{pin}}\",\n  \"store_id\": \"{{storeId}}\",\n  \"is_login_operation\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: authenticate-barcode (temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "13 users-with-barcodes (temp)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-13",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/users-with-barcodes?storeId={{storeId}}&workstationName={{workstation}}",
+						"description": "The temp employee must reach the roster workstations cache, or the register will not know about them offline.\n\nSource of truth: `src/selftest/journey.js` step `users-with-barcodes (temp)`."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"var b = pm.response.json();",
+									"var id = pm.variables.get(\"tempEmployeeId\"), bc = pm.variables.get(\"tempBarcode\");",
+									"var rec = (b.users || []).find(function (u) { return String(u._id) === String(id); });",
+									"pm.test(\"temp employee is in the roster\", function () { pm.expect(rec, \"roster has no record for \" + id).to.exist; });",
+									"pm.test(\"roster carries the registered barcode\", function () { pm.expect(rec && rec.barcode && rec.barcode.barcode).to.equal(bc); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: users-with-barcodes (temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "14 users?employeeId (temp)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-14",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/users?employeeId={{tempEmployeeId}}",
+						"description": "Direct lookup of the account created at the top.\n\nSource of truth: `src/selftest/journey.js` step `users?employeeId (temp)`."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: users?employeeId (temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "15 verify-credentials (UI, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-15",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/verify-credentials",
+						"description": "The UI's agent-down credential path, against a temp account that now exists. Keyless by design — this is the profile strict API key enforcement would lock out.\n\nSource of truth: `src/selftest/journey.js` step `verify-credentials (UI, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"correlationID\": \"{{runCorrelationId}}\",\n  \"path\": \"/verify-credentials\",\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"password\": \"{{pin}}\",\n  \"isLogin\": false,\n  \"isTempEmployee\": true\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: verify-credentials (UI, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "16 generate-barcode (UI, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-16",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/generate-barcode",
+						"description": "Mints a barcode for the temp employee through the UI path, so the next step has something real to verify.\n\nSource of truth: `src/selftest/journey.js` step `generate-barcode (UI, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"employeeId\": \"{{tempEmployeeId}}\",\n  \"pin\": \"{{pin}}\",\n  \"validity\": 86400,\n  \"store_id\": \"{{storeId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"var b = pm.response.json();",
+									"var g = b.barcodeData || (b.response && b.response.barcodeData) || b.barcode;",
+									"if (g) pm.variables.set(\"tempGeneratedBarcode\", g);",
+									"pm.test(\"generate-barcode returned barcodeData\", function () { pm.expect(g, JSON.stringify(b)).to.be.a(\"string\"); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: generate-barcode (UI, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "17 users-with-barcodes (after generate, temp)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-17",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/users-with-barcodes?storeId={{storeId}}&workstationName={{workstation}}",
+						"description": "Cross-checks generate-barcode's return against the roster, and hands the next step a barcode from the source of truth rather than from a response body.\n\nSource of truth: `src/selftest/journey.js` step `users-with-barcodes (after generate, temp)`."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"var b = pm.response.json();",
+									"var id = pm.variables.get(\"tempEmployeeId\");",
+									"var rec = (b.users || []).find(function (u) { return String(u._id) === String(id); });",
+									"var rb = rec && rec.barcode && rec.barcode.barcode;",
+									"pm.variables.set(\"tempRosterBarcodeAfterGenerate\", rb || \"\");",
+									"pm.test(\"roster carries a barcode after generate\", function () { pm.expect(rb).to.be.a(\"string\"); });",
+									"// Offline the mint is a local write, so the roster must hold it. Online the mint is in the cloud and the",
+									"// local row legitimately keeps the agent-registered barcode — see journey.js.",
+									"if (pm.variables.get(\"forwardToCloud\") !== \"true\" && pm.variables.get(\"tempGeneratedBarcode\")) {",
+									"\tpm.test(\"offline: roster holds the generated barcode\", function () { pm.expect(rb).to.equal(pm.variables.get(\"tempGeneratedBarcode\")); });",
+									"}",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: users-with-barcodes (after generate, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "18 verify-barcode (UI, temp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-18",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/verify-barcode",
+						"description": "Closes the UI loop: verify what generate-barcode produced, over the keyless profile a register falls back to.\n\nSource of truth: `src/selftest/journey.js` step `verify-barcode (UI, temp)`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"correlationID\": \"{{runCorrelationId}}\",\n  \"path\": \"/verify-barcode\",\n  \"barcodeData\": \"{{verifyBarcodeData}}\",\n  \"pin\": \"{{pin}}\",\n  \"isLogin\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var online = pm.variables.get(\"forwardToCloud\") === \"true\";",
+									"var gen = pm.variables.get(\"tempGeneratedBarcode\"), roster = pm.variables.get(\"tempRosterBarcodeAfterGenerate\"), reg = pm.variables.get(\"tempBarcode\");",
+									"pm.variables.set(\"verifyBarcodeData\", online ? (gen || roster || reg) : (roster || gen || reg));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: verify-barcode (UI, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "19 health-idp (after, temp)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "content-type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "x-agent-version",
+								"value": "{{agentVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{runCorrelationId}}-19",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/health-idp",
+						"description": "Still alive after a full write journey — catches anything the run itself destabilised.\n\nSource of truth: `src/selftest/journey.js` step `health-idp (after, temp)`."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2xx\", function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299); });",
+									"if (pm.response.code >= 300) { console.log(\"journey stopped at: health-idp (after, temp)\"); pm.execution.setNextRequest(null); }"
+								]
+							}
+						}
+					]
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"var target = String(pm.variables.get(\"targetEnvironment\") || \"\").toLowerCase();",
+							"if (target !== \"uat\" && target !== \"dev\" && target !== \"local\") {",
+							"\tpm.variables.set(\"edgeBase\", \"http://write-guard-refused.invalid\");",
+							"\tpm.execution.setNextRequest(null);",
+							"\tthrow new Error(\"REFUSED: this folder WRITES test data. Set targetEnvironment to uat, dev or local (it is \\\"\" + target + \"\\\"). Never run it against a production store.\");",
+							"}"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "05 Self-test API — the edge tests itself",
+			"description": "The same tables, run inside the deployed edge. Nothing to install on the tester's side — this folder or plain curl is enough. Each subfolder starts a run, polls it, and fetches the report.",
+			"item": [
+				{
+					"name": "Self-test: table",
+					"description": "Every endpoint, independent requests, read-only.",
+					"item": [
+						{
+							"name": "start table",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "content-type",
+										"value": "application/json",
+										"type": "text"
+									},
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test",
+								"description": "Every endpoint, independent requests, read-only.",
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"suite\": \"table\",\n  \"modes\": [\n    \"offline\",\n    \"online\"\n  ],\n  \"nonDestructiveOnly\": true\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"202 accepted\", function () { pm.response.to.have.status(202); });",
+											"pm.collectionVariables.set(\"selfTestRunId_table\", pm.response.json().runId);",
+											"pm.variables.set(\"pollCount_table\", \"0\");"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "poll table until complete",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test/{{selfTestRunId_table}}",
+								"description": "Re-sends itself every 10 s until the run completes (max 15 minutes)."
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"var b = pm.response.json();",
+											"var n = Number(pm.variables.get(\"pollCount_table\") || 0) + 1;",
+											"pm.variables.set(\"pollCount_table\", String(n));",
+											"if (b.status === \"running\" && n < 90) {",
+											"\tsetTimeout(function () {}, 10000);",
+											"\tpm.execution.setNextRequest(pm.info.requestName);",
+											"} else {",
+											"\tconsole.log(\"self-test\", b.suite, b.status, \"passed\", b.passed, \"failed\", b.failed, \"skipped\", b.skipped);",
+											"\tpm.test(\"run completed\", function () { pm.expect(b.status).to.equal(\"complete\"); });",
+											"\tpm.test(\"no failed scenarios\", function () { pm.expect(b.failed, \"see the report request\").to.equal(0); });",
+											"}"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "report table (html)",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test/{{selfTestRunId_table}}/report?format=html",
+								"description": "Downloadable report. Use format=txt or format=json for other forms. In Postman: Send and Download."
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Self-test: temp",
+					"description": "Temp-employee lifecycle run by the edge against itself. WRITES; needs SELF_TEST_ALLOW_DESTRUCTIVE=true on the edge.",
+					"item": [
+						{
+							"name": "start temp",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "content-type",
+										"value": "application/json",
+										"type": "text"
+									},
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test",
+								"description": "Temp-employee lifecycle run by the edge against itself. WRITES; needs SELF_TEST_ALLOW_DESTRUCTIVE=true on the edge.",
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"suite\": \"temp\",\n  \"modes\": [\n    \"offline\",\n    \"online\"\n  ],\n  \"includeDestructive\": true\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"202 accepted\", function () { pm.response.to.have.status(202); });",
+											"pm.collectionVariables.set(\"selfTestRunId_temp\", pm.response.json().runId);",
+											"pm.variables.set(\"pollCount_temp\", \"0\");"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "poll temp until complete",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test/{{selfTestRunId_temp}}",
+								"description": "Re-sends itself every 10 s until the run completes (max 15 minutes)."
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"var b = pm.response.json();",
+											"var n = Number(pm.variables.get(\"pollCount_temp\") || 0) + 1;",
+											"pm.variables.set(\"pollCount_temp\", String(n));",
+											"if (b.status === \"running\" && n < 90) {",
+											"\tsetTimeout(function () {}, 10000);",
+											"\tpm.execution.setNextRequest(pm.info.requestName);",
+											"} else {",
+											"\tconsole.log(\"self-test\", b.suite, b.status, \"passed\", b.passed, \"failed\", b.failed, \"skipped\", b.skipped);",
+											"\tpm.test(\"run completed\", function () { pm.expect(b.status).to.equal(\"complete\"); });",
+											"\tpm.test(\"no failed scenarios\", function () { pm.expect(b.failed, \"see the report request\").to.equal(0); });",
+											"}"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "report temp (html)",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test/{{selfTestRunId_temp}}/report?format=html",
+								"description": "Downloadable report. Use format=txt or format=json for other forms. In Postman: Send and Download."
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Self-test: resiliency (read-only half)",
+					"description": "Reports the configured TLSTOR-836 timeouts and TLSTOR-838 rate limit. probeIdp=false skips the live probes, which make /health-idp report DOWN while they run.",
+					"item": [
+						{
+							"name": "start resiliency (read-only half)",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "content-type",
+										"value": "application/json",
+										"type": "text"
+									},
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test",
+								"description": "Reports the configured TLSTOR-836 timeouts and TLSTOR-838 rate limit. probeIdp=false skips the live probes, which make /health-idp report DOWN while they run.",
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"suite\": \"resiliency\",\n  \"modes\": [\n    \"offline\"\n  ],\n  \"probeIdp\": false\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"202 accepted\", function () { pm.response.to.have.status(202); });",
+											"pm.collectionVariables.set(\"selfTestRunId_resiliency\", pm.response.json().runId);",
+											"pm.variables.set(\"pollCount_resiliency\", \"0\");"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "poll resiliency (read-only half) until complete",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test/{{selfTestRunId_resiliency}}",
+								"description": "Re-sends itself every 10 s until the run completes (max 15 minutes)."
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"var b = pm.response.json();",
+											"var n = Number(pm.variables.get(\"pollCount_resiliency\") || 0) + 1;",
+											"pm.variables.set(\"pollCount_resiliency\", String(n));",
+											"if (b.status === \"running\" && n < 90) {",
+											"\tsetTimeout(function () {}, 10000);",
+											"\tpm.execution.setNextRequest(pm.info.requestName);",
+											"} else {",
+											"\tconsole.log(\"self-test\", b.suite, b.status, \"passed\", b.passed, \"failed\", b.failed, \"skipped\", b.skipped);",
+											"\tpm.test(\"run completed\", function () { pm.expect(b.status).to.equal(\"complete\"); });",
+											"\tpm.test(\"no failed scenarios\", function () { pm.expect(b.failed, \"see the report request\").to.equal(0); });",
+											"}"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "report resiliency (read-only half) (html)",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test/{{selfTestRunId_resiliency}}/report?format=html",
+								"description": "Downloadable report. Use format=txt or format=json for other forms. In Postman: Send and Download."
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Self-test: integrity (read-only)",
+					"description": "Checks this build cannot mass soft-delete a store from one enrolment (store 68641, 2026-10-21) and reports rows that would have triggered it.",
+					"item": [
+						{
+							"name": "start integrity (read-only)",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "content-type",
+										"value": "application/json",
+										"type": "text"
+									},
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test",
+								"description": "Checks this build cannot mass soft-delete a store from one enrolment (store 68641, 2026-10-21) and reports rows that would have triggered it.",
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"suite\": \"integrity\",\n  \"modes\": [\n    \"offline\"\n  ],\n  \"probeWrites\": false\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"202 accepted\", function () { pm.response.to.have.status(202); });",
+											"pm.collectionVariables.set(\"selfTestRunId_integrity\", pm.response.json().runId);",
+											"pm.variables.set(\"pollCount_integrity\", \"0\");"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "poll integrity (read-only) until complete",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test/{{selfTestRunId_integrity}}",
+								"description": "Re-sends itself every 10 s until the run completes (max 15 minutes)."
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"var b = pm.response.json();",
+											"var n = Number(pm.variables.get(\"pollCount_integrity\") || 0) + 1;",
+											"pm.variables.set(\"pollCount_integrity\", String(n));",
+											"if (b.status === \"running\" && n < 90) {",
+											"\tsetTimeout(function () {}, 10000);",
+											"\tpm.execution.setNextRequest(pm.info.requestName);",
+											"} else {",
+											"\tconsole.log(\"self-test\", b.suite, b.status, \"passed\", b.passed, \"failed\", b.failed, \"skipped\", b.skipped);",
+											"\tpm.test(\"run completed\", function () { pm.expect(b.status).to.equal(\"complete\"); });",
+											"\tpm.test(\"no failed scenarios\", function () { pm.expect(b.failed, \"see the report request\").to.equal(0); });",
+											"}"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "report integrity (read-only) (html)",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "X-Api-Key",
+										"value": "{{apiKey}}",
+										"type": "text"
+									}
+								],
+								"url": "{{edgeBase}}{{basePath}}/self-test/{{selfTestRunId_integrity}}/report?format=html",
+								"description": "Downloadable report. Use format=txt or format=json for other forms. In Postman: Send and Download."
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+										]
+									}
+								}
+							]
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "99 Templates — add your own test cases here",
+			"description": "Duplicate a request into this folder (or a new folder of your own) to add a case. The variables in the environment carry the store, key and test identities; the collection pre-request sets profileExpiryTime and expireAt.\n\nTo make a case part of the contract policy, put it in a folder with the same test script as folder 01 (Folder → Scripts → Post-response), or copy the script into the request.\n\nRegenerating (`npm run qa:postman`) rewrites the whole file, so keep your own cases in a separate collection (or a fork of this one) and pull new releases of this file alongside it. A case that should run everywhere — CI gate, self-test API, CLI and this collection — is better added as a row in src/selftest/endpoints.js or a step in journey.js; send it to the PrivateID team and it arrives in the next regeneration.",
+			"item": [
+				{
+					"name": "example — users lookup for a known test employee",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Api-Key",
+								"value": "{{apiKey}}",
+								"type": "text"
+							},
+							{
+								"key": "x-api-version",
+								"value": "{{apiVersion}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Workstation-Name",
+								"value": "{{workstation}}",
+								"type": "text"
+							},
+							{
+								"key": "x-forward-to-cloud",
+								"value": "{{forwardToCloud}}",
+								"type": "text"
+							}
+						],
+						"url": "{{edgeBase}}{{basePath}}/users?employeeId={{employeeId}}",
+						"description": "Example only. Replace the assertions with what the case should prove."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+									"pm.test(\"returns the requested employee\", function () { pm.expect(String(pm.response.json()._id || pm.response.json().employeeId)).to.equal(pm.variables.get(\"employeeId\")); });"
+								]
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}

@@ -1,0 +1,3 @@
+PrivateID edge QA regression pack
+Generated from privateid-edge-component @ dc8095e (branch feat/cb-auth-credentials-block-only) on 2026-11-16.
+Regenerate the collection with: npm run qa:postman
