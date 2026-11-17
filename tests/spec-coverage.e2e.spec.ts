@@ -194,6 +194,89 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(logs).not.toContain('WrongPassword!');
   });
 
+  test('[LOG-06] sosToken, barcode PINs, barcodes and PING/SM tokens never appear in SecurityLog or ErrorLog, on success or failure', async () => {
+    test.skip(!IS_MOCK, 'Requires mock state inspection (log files on a live agent: MTC-06)');
+    // PINs avoid every action/error code and the seeded store/machine IDs, so a match can only be a leak.
+    const pin = '7319';
+    const wrongPin = '2864';
+    const secrets: Record<string, string> = { pin, wrongPin };
+    const cids: string[] = [];
+    const track = <T extends { correlationID: string }>(res: T): T => {
+      cids.push(res.correlationID);
+      return res;
+    };
+
+    // Temporary employee login returns an sosToken.
+    const temp = track(await client.send('/authenticate/credentials', {
+      employeeId: 'temp_emp_01',
+      password: 'TempPassword123',
+      isTempEmployee: true,
+      isLogin: true,
+    }));
+    expect(temp.statusCode).toBe(200);
+    secrets.sosToken = temp.response.sosToken;
+
+    // Regular login returns the SM session token and the PING session.
+    const login = track(await client.send('/authenticate/credentials', {
+      employeeId: 'rt00001',
+      password: 'SecretPassword123',
+      isLogin: true,
+    }));
+    expect(login.statusCode).toBe(200);
+    secrets.smSessionToken = login.response.userInfo.sessionToken;
+    secrets.pingAccessToken = login.response.userInfo.pingSession.access_token;
+    secrets.pingIdToken = login.response.userInfo.pingSession.id_token;
+    secrets.pingRefreshToken = login.response.userInfo.pingSession.refresh_token;
+
+    // /user/token for a valid user and for one whose tokens are refreshed on the way.
+    for (const employeeId of ['rt00001', 'expired_emp_01']) {
+      const tokens = track(await client.send('/user/token', { employeeId, tokenType: ['PING', 'SM'] }));
+      expect(tokens.statusCode).toBe(200);
+      for (const t of tokens.response.userTokens) secrets[`${employeeId}:${t.type}`] = t.token;
+    }
+
+    // Barcode with a PIN: create, wrong PIN (failure path), then success.
+    const reg = track(await client.send('/register/barcode', { employeeId: 'rt00001', pin, validity: 300 }));
+    expect(reg.statusCode).toBe(200);
+    secrets.barcode = reg.response.barcodeData;
+    const bad = track(await client.send('/authenticate/barcode', { barcodeData: reg.response.barcodeData, pin: wrongPin }));
+    expect(bad.response.errorInfo.code).toBe(6523);
+    const ok = track(await client.send('/authenticate/barcode', { barcodeData: reg.response.barcodeData, pin, isLogin: true }));
+    expect(ok.statusCode).toBe(200);
+
+    // Failed temp login (ErrorLog path).
+    const tempBad = track(await client.send('/authenticate/credentials', {
+      employeeId: 'temp_emp_01',
+      password: 'nope',
+      isTempEmployee: true,
+    }));
+    expect(tempBad.statusCode).toBe(400);
+
+    // Every secret was really captured, so the check below is not vacuous.
+    for (const [name, value] of Object.entries(secrets)) {
+      expect(typeof value, name).toBe('string');
+      expect(value.length, name).toBeGreaterThanOrEqual(4);
+    }
+
+    const state = await inspectMockState();
+    // Every call above was logged; the two failures also reached ErrorLog.
+    for (const cid of cids) {
+      expect(state.securityLogs.some((l: any) => l.correlationId === cid), cid).toBe(true);
+    }
+    for (const cid of [bad.correlationID, tempBad.correlationID]) {
+      expect(state.errorLogs.some((l: any) => l.correlationId === cid), cid).toBe(true);
+    }
+
+    // correlationIds and timestamps contain random digits, so drop them before searching for
+    // the 4-digit PINs. Compare case-insensitively: barcodes are matched case-insensitively.
+    const strip = (entries: any[]) =>
+      entries.map(({ correlationId, logTimestamp, errorTimestamp, ...rest }: any) => rest);
+    const haystack = JSON.stringify([strip(state.securityLogs), strip(state.errorLogs)]).toLowerCase();
+    for (const [name, value] of Object.entries(secrets)) {
+      expect(haystack.includes(value.toLowerCase()), `${name} leaked into the logs`).toBe(false);
+    }
+  });
+
   // ===========================================================================
   // HEALTH: /healthCheck and /healthStatusUpdate
   // ===========================================================================
