@@ -4,7 +4,9 @@
   "description": "End-to-End Playwright Automation Suite for Charlie StoreOS Security Agent",
   "scripts": {
     "test": "playwright test",
-    "test:mock": "USE_MOCK_AGENT=true playwright test",
+    "test:mock": "playwright test --project=mock",
+    "test:live": "playwright test --project=live",
+    "test:live:mutating": "playwright test --project=live-mutating",
     "mock:start": "npx tsx mock-server/server.ts",
     "report": "playwright show-report"
   },

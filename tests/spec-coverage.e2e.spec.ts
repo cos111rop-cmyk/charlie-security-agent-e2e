@@ -4,22 +4,21 @@
  * Every test title starts with a requirement ID (e.g. [PRO-02]) that is listed in
  * docs/REQUIREMENTS_TRACEABILITY.md together with its source document and section.
  *
- * Tests marked `mock only` need the mock control plane (fault injection / state inspection).
- * Tests that create, change or delete data are skipped against a live agent unless
- * ALLOW_LIVE_MUTATIONS=true.
+ * Every test also carries one mode tag, which the Playwright projects select on:
+ *   @live           read-only; runs against any agent
+ *   @live-mutating  creates, changes or deletes agent data; live only on a disposable terminal
+ *   @mock-only      needs the mock control plane (fault injection / state inspection)
+ * The fixture in ./fixtures fails a test that runs in a mode its tag does not allow.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import {
   AgentWsClient,
   resetMockState,
   setMockState,
   inspectMockState,
-  IS_MOCK,
-  CAN_MUTATE,
   uniqueId,
 } from './ws-client';
 
-const MUTATION_SKIP = 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
@@ -32,7 +31,8 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   });
 
   test.afterEach(async () => {
-    await client.close();
+    // Undefined when the mode guard stopped the test before beforeEach connected.
+    await client?.close();
   });
 
   const registerTemp = (employeeId: string, extra: Record<string, any> = {}) =>
@@ -48,7 +48,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // PROTOCOL: correlationID / path / payload / response envelope
   // ===========================================================================
-  test('[PRO-01] Every response carries statusCode (200|400), correlationID, path, response block and timeTaken', async () => {
+  test('[PRO-01] Every response carries statusCode (200|400), correlationID, path, response block and timeTaken', { tag: '@live' }, async () => {
     const calls: Array<[string, Record<string, any> | undefined, number]> = [
       ['/healthCheck', undefined, 200],
       ['/userinfo', { employeeId: 'rt00001' }, 200],
@@ -74,7 +74,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     }
   });
 
-  test('[PRO-02] Concurrent requests are answered with their own correlationID and never cross', async () => {
+  test('[PRO-02] Concurrent requests are answered with their own correlationID and never cross', { tag: '@live' }, async () => {
     const [a, b, c] = await Promise.all([
       client.send('/healthCheck', undefined, 'concurrent-A'),
       client.send('/userinfo', { employeeId: 'rt00001' }, 'concurrent-B'),
@@ -85,8 +85,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect([c.correlationID, c.path, c.statusCode]).toEqual(['concurrent-C', '/userinfo', 400]);
   });
 
-  test('[PRO-03] A malformed request frame is rejected without taking the agent down', async () => {
-    test.skip(!IS_MOCK, 'Sending malformed frames to a live agent is not safe');
+  test('[PRO-03] A malformed request frame is rejected without taking the agent down', { tag: '@mock-only' }, async () => {
     const res = await client.sendRaw('this is not json');
     expect(res.statusCode).toBe(400);
     expect(res.response.errorInfo.code).toBeDefined();
@@ -94,8 +93,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(hc.statusCode).toBe(200);
   });
 
-  test('[PRO-04] processingMs is returned on biometric authentication, barcode authentication and biometric enrollment', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[PRO-04] processingMs is returned on biometric authentication, barcode authentication and biometric enrollment', { tag: '@live-mutating' }, async () => {
     const bio = await client.send('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 0 });
     expect(typeof bio.processingMs).toBe('number');
 
@@ -122,8 +120,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // LOGGING: SecurityLog / ErrorLog
   // ===========================================================================
-  test('[LOG-01] A failed /healthCheck returns 9502 and is written to ErrorLog, not SecurityLog', async () => {
-    test.skip(!IS_MOCK, 'Requires mock state inspection and failure injection');
+  test('[LOG-01] A failed /healthCheck returns 9502 and is written to ErrorLog, not SecurityLog', { tag: '@mock-only' }, async () => {
     const res = await client.send('/healthCheck', { simulateFailure: true });
     expect(res.statusCode).toBe(400);
     expect(res.response.errorInfo.code).toBe(9502);
@@ -135,8 +132,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(state.securityLogs.some((l: any) => l.correlationId === res.correlationID)).toBe(false);
   });
 
-  test('[LOG-02] Every successful non-health call is written to SecurityLog with the mandated fields', async () => {
-    test.skip(!IS_MOCK, 'Requires mock state inspection');
+  test('[LOG-02] Every successful non-health call is written to SecurityLog with the mandated fields', { tag: '@mock-only' }, async () => {
     const res = await client.send('/userinfo', { employeeId: 'rt00001' });
     const state = await inspectMockState();
     const entry = state.securityLogs.find((l: any) => l.correlationId === res.correlationID);
@@ -151,8 +147,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(entry.actionResult).toBe('statusCode:200//actionCode:900');
   });
 
-  test('[LOG-03] A failed API call is logged in ErrorLog with errorCode, errorMessage, correlationId and timeTakenMs', async () => {
-    test.skip(!IS_MOCK, 'Requires mock state inspection');
+  test('[LOG-03] A failed API call is logged in ErrorLog with errorCode, errorMessage, correlationId and timeTakenMs', { tag: '@mock-only' }, async () => {
     const reg = await client.send('/register/barcode', { employeeId: 'rt00001', pin: '4354', validity: 300 });
     const bad = await client.send('/authenticate/barcode', {
       barcodeData: reg.response.barcodeData,
@@ -170,8 +165,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(typeof entry.timeTakenMs).toBe('number');
   });
 
-  test('[LOG-04] A failed non-health call is also recorded in SecurityLog with its failing statusCode/actionCode', async () => {
-    test.skip(!IS_MOCK, 'Requires mock state inspection');
+  test('[LOG-04] A failed non-health call is also recorded in SecurityLog with its failing statusCode/actionCode', { tag: '@mock-only' }, async () => {
     const bad = await client.send('/authenticate/credentials', {
       employeeId: 'rt00001',
       password: 'WrongPassword!',
@@ -182,8 +176,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(entry.actionResult).toBe('statusCode:400//actionCode:651');
   });
 
-  test('[LOG-05] Plaintext passwords never appear in responses or in the logs', async () => {
-    test.skip(!IS_MOCK, 'Requires mock state inspection');
+  test('[LOG-05] Plaintext passwords never appear in responses or in the logs', { tag: '@mock-only' }, async () => {
     const password = 'SecretPassword123';
     const res = await client.send('/authenticate/credentials', { employeeId: 'rt00001', password, isLogin: true });
     expect(JSON.stringify(res)).not.toContain(password);
@@ -194,8 +187,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(logs).not.toContain('WrongPassword!');
   });
 
-  test('[LOG-06] sosToken, barcode PINs, barcodes and PING/SM tokens never appear in SecurityLog or ErrorLog, on success or failure', async () => {
-    test.skip(!IS_MOCK, 'Requires mock state inspection (log files on a live agent: MTC-06)');
+  test('[LOG-06] sosToken, barcode PINs, barcodes and PING/SM tokens never appear in SecurityLog or ErrorLog, on success or failure', { tag: '@mock-only' }, async () => {
     // PINs avoid every action/error code and the seeded store/machine IDs, so a match can only be a leak.
     const pin = '7319';
     const wrongPin = '2864';
@@ -277,8 +269,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     }
   });
 
-  test('[LOG-07] A successful /healthCheck is not written to SecurityLog', async () => {
-    test.skip(!IS_MOCK, 'Requires mock state inspection');
+  test('[LOG-07] A successful /healthCheck is not written to SecurityLog', { tag: '@mock-only' }, async () => {
     const res = await client.send('/healthCheck');
     expect(res.statusCode).toBe(200);
     const state = await inspectMockState();
@@ -289,7 +280,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // HEALTH: /healthCheck and /healthStatusUpdate
   // ===========================================================================
-  test('[HEA-01] /healthCheck reports service, camera, database and UI status', async () => {
+  test('[HEA-01] /healthCheck reports service, camera, database and UI status', { tag: '@live' }, async () => {
     const res = await client.send('/healthCheck');
     expect(res.statusCode).toBe(200);
     expect(res.response.serviceStatus.status).toBe(0);
@@ -301,24 +292,21 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.response.uiStatus).toBe(0);
   });
 
-  test('[HEA-02] /healthCheck reports an IDP outage (status DOWN, allServicesDown, 1515) but still returns 200', async () => {
-    test.skip(!IS_MOCK, 'Requires IDP fault injection');
+  test('[HEA-02] /healthCheck reports an IDP outage (status DOWN, allServicesDown, 1515) but still returns 200', { tag: '@mock-only' }, async () => {
     await setMockState({ idpDown: true });
     const res = await client.send('/healthCheck');
     expect(res.statusCode).toBe(200);
     expect(res.idpStatus).toMatchObject({ status: 'DOWN', allServicesDown: true, statusCode: 1515 });
   });
 
-  test('[HEA-03] /healthCheck reports uiStatus -1 when the agent runs without a graphical session', async () => {
-    test.skip(!IS_MOCK, 'Requires headless toggle');
+  test('[HEA-03] /healthCheck reports uiStatus -1 when the agent runs without a graphical session', { tag: '@mock-only' }, async () => {
     await setMockState({ uiEnabled: false });
     const res = await client.send('/healthCheck');
     expect(res.statusCode).toBe(200);
     expect(res.response.uiStatus).toBe(-1);
   });
 
-  test('[HSU-01] /healthStatusUpdate heartbeat is pushed to a connected client without a request', async () => {
-    test.skip(!IS_MOCK, 'Heartbeat interval is configured by the mock (HEARTBEAT_MS)');
+  test('[HSU-01] /healthStatusUpdate heartbeat is pushed to a connected client without a request', { tag: '@mock-only' }, async () => {
     const frame = await client.waitForFrame((f) => f.path === '/healthStatusUpdate', 4000);
     expect(frame.statusCode).toBe(200);
     expect(frame.correlationID).toBe('');
@@ -329,8 +317,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(frame.timeTaken).toMatch(/^\d+ms$/);
   });
 
-  test('[HSU-02] A /healthStatusUpdate reporting the camera OFF is received after the camera is turned off', async () => {
-    test.skip(!IS_MOCK, 'Requires deterministic camera toggle');
+  test('[HSU-02] A /healthStatusUpdate reporting the camera OFF is received after the camera is turned off', { tag: '@mock-only' }, async () => {
     const frame = client.waitForFrame(
       (f) => f.path === '/healthStatusUpdate' && f.response.cameraStatus?.cameraEnabled === false,
       4000
@@ -339,8 +326,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect((await frame).response.cameraStatus.cameraEnabled).toBe(false);
   });
 
-  test('[HSU-03] A /healthStatusUpdate frame is received after internet connectivity changes', async () => {
-    test.skip(!IS_MOCK, 'Requires connectivity fault injection');
+  test('[HSU-03] A /healthStatusUpdate frame is received after internet connectivity changes', { tag: '@mock-only' }, async () => {
     const frame = client.waitForFrame((f) => f.path === '/healthStatusUpdate', 4000);
     await setMockState({ offlineMode: true });
     expect((await frame).statusCode).toBe(200);
@@ -349,8 +335,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /register/biometric
   // ===========================================================================
-  test('[RGB-01] Biometric enrollment succeeds with the correlationID of a successful credentials login (consentVersion/state optional)', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[RGB-01] Biometric enrollment succeeds with the correlationID of a successful credentials login (consentVersion/state optional)', { tag: '@live-mutating' }, async () => {
     const login = await client.send('/authenticate/credentials', {
       employeeId: 'rt00001',
       password: 'SecretPassword123',
@@ -375,8 +360,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(withOptional.statusCode).toBe(200);
   });
 
-  test('[RGB-02] Biometric enrollment is rejected with 6501 when the login correlationID belongs to a failed login', async () => {
-    test.skip(!IS_MOCK, 'Requires the agent to log failed logins in SecurityLog');
+  test('[RGB-02] Biometric enrollment is rejected with 6501 when the login correlationID belongs to a failed login', { tag: '@mock-only' }, async () => {
     const failed = await client.send('/authenticate/credentials', {
       employeeId: 'rt00001',
       password: 'WrongPassword!',
@@ -391,7 +375,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.response.errorInfo.code).toBe(6501);
   });
 
-  test('[RGB-03] Biometric enrollment rejects a loginCorrelationID that was not produced by a credentials login or temp registration', async () => {
+  test('[RGB-03] Biometric enrollment rejects a loginCorrelationID that was not produced by a credentials login or temp registration', { tag: '@live' }, async () => {
     const info = await client.send('/userinfo', { employeeId: 'rt00001' });
     const res = await client.send('/register/biometric', {
       employeeId: 'rt00001',
@@ -401,8 +385,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.response.actionResult.code).toBe(152);
   });
 
-  test('[RGB-04] Biometric enrollment returns 9500 when the UI cannot be initialized (headless)', async () => {
-    test.skip(!IS_MOCK, 'Requires headless toggle');
+  test('[RGB-04] Biometric enrollment returns 9500 when the UI cannot be initialized (headless)', { tag: '@mock-only' }, async () => {
     await setMockState({ uiEnabled: false });
     const res = await client.send('/register/biometric', {
       employeeId: 'rt00001',
@@ -412,8 +395,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.response.errorInfo.code).toBe(9500);
   });
 
-  test('[UI-01] Closing the UI (X icon) during enrollment or authentication returns 9509 "Back UI navigation"', async () => {
-    test.skip(!IS_MOCK, 'Requires UI interaction simulation');
+  test('[UI-01] Closing the UI (X icon) during enrollment or authentication returns 9509 "Back UI navigation"', { tag: '@mock-only' }, async () => {
     const enroll = await client.send('/register/biometric', {
       employeeId: 'rt00001',
       loginCorrelationID: 'valid-login-cid-001',
@@ -436,8 +418,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /authenticate/credentials
   // ===========================================================================
-  test('[CRD-01] Credential login: isLogin=false omits credentialType/credentialRefId when nothing is stored', async () => {
-    test.skip(!IS_MOCK, 'Requires a profile with no stored credential history');
+  test('[CRD-01] Credential login: isLogin=false omits credentialType/credentialRefId when nothing is stored', { tag: '@mock-only' }, async () => {
     const res = await client.send('/authenticate/credentials', {
       employeeId: 'rt00001',
       password: 'SecretPassword123',
@@ -449,8 +430,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(typeof res.response.isBiometricRegistered).toBe('boolean');
   });
 
-  test('[CRD-02] Credential login: isLogin=true stores credentialType/credentialRefId and a later isLogin=false returns the stored values', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[CRD-02] Credential login: isLogin=true stores credentialType/credentialRefId and a later isLogin=false returns the stored values', { tag: '@live-mutating' }, async () => {
     const first = await client.send('/authenticate/credentials', {
       employeeId: 'rt00001',
       password: 'SecretPassword123',
@@ -468,8 +448,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(second.response.credentialRefId).toBe(first.correlationID);
   });
 
-  test('[CRD-03] Temporary employee login (isTempEmployee=true) returns an sosToken and rejects a wrong password with 6501', async () => {
-    test.skip(!IS_MOCK, 'Requires seeded temporary employee with credentials');
+  test('[CRD-03] Temporary employee login (isTempEmployee=true) returns an sosToken and rejects a wrong password with 6501', { tag: '@mock-only' }, async () => {
     const ok = await client.send('/authenticate/credentials', {
       employeeId: 'temp_emp_01',
       password: 'TempPassword123',
@@ -488,7 +467,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(bad.response.errorInfo.code).toBe(6501);
   });
 
-  test('[CRD-04] Credential login for an unknown employee is rejected with 651/6501', async () => {
+  test('[CRD-04] Credential login for an unknown employee is rejected with 651/6501', { tag: '@live' }, async () => {
     const res = await client.send('/authenticate/credentials', {
       employeeId: 'unknown_999',
       password: 'whatever',
@@ -501,8 +480,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /authenticate/biometric
   // ===========================================================================
-  test('[BIO-01] 1:N search without employeeId identifies the cached user and returns uuid, userInfo and modelUsed', async () => {
-    test.skip(!IS_MOCK, 'Requires a known enrolled face on the agent');
+  test('[BIO-01] 1:N search without employeeId identifies the cached user and returns uuid, userInfo and modelUsed', { tag: '@mock-only' }, async () => {
     const res = await client.send('/authenticate/biometric', { uiDelay: 0, liveness_reco: true });
     expect(res.statusCode).toBe(200);
     expect(res.response.actionResult.code).toBe(102);
@@ -511,8 +489,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.modelUsed).toBe('mbfv1');
   });
 
-  test('[BIO-02] A 1:1 request for an employee that is not in the cache, and a 1:N search with no match, return 1506', async () => {
-    test.skip(!IS_MOCK, 'Requires deterministic cache contents');
+  test('[BIO-02] A 1:1 request for an employee that is not in the cache, and a 1:N search with no match, return 1506', { tag: '@mock-only' }, async () => {
     const oneToOne = await client.send('/authenticate/biometric', { employeeId: 'unknown_999', uiDelay: 0 });
     expect(oneToOne.statusCode).toBe(400);
     expect(oneToOne.response.actionResult.code).toBe(153);
@@ -526,8 +503,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(oneToN.response.errorInfo.code).toBe(1506);
   });
 
-  test('[BIO-03] Biometric login: isLogin=true stores credentialType "biometric" with the correlationID; isLogin=false returns stored values', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[BIO-03] Biometric login: isLogin=true stores credentialType "biometric" with the correlationID; isLogin=false returns stored values', { tag: '@live-mutating' }, async () => {
     const first = await client.send('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 0, isLogin: true });
     expect(first.statusCode).toBe(200);
     expect(first.response.credentialType).toBe('biometric');
@@ -538,8 +514,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(second.response.credentialRefId).toBe(first.correlationID);
   });
 
-  test('[BIO-04] During capture the agent reports no face (1503), multiple faces (1501) and poor image quality (1502) as 150 re-scan prompts', async () => {
-    test.skip(!IS_MOCK, 'Requires vision fault injection');
+  test('[BIO-04] During capture the agent reports no face (1503), multiple faces (1501) and poor image quality (1502) as 150 re-scan prompts', { tag: '@mock-only' }, async () => {
     const noFace = await client.send('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 0, simulateNoFace: true });
     expect(noFace.statusCode).toBe(400);
     expect(noFace.response.actionResult.code).toBe(150);
@@ -578,8 +553,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     ['Face tilted left', 'Straighten head'],
   ];
   for (const [vision, message] of visionTable) {
-    test(`[UIG-01] CVS feedback translation: "${vision}" -> "${message}"`, async () => {
-      test.skip(!IS_MOCK, 'Requires vision fault injection');
+    test(`[UIG-01] CVS feedback translation: "${vision}" -> "${message}"`, { tag: '@mock-only' }, async () => {
       const res = await client.send('/authenticate/biometric', {
         employeeId: 'rt00001',
         uiDelay: 0,
@@ -590,22 +564,19 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     });
   }
 
-  test('[BIO-05] The 30-second capture timeout is reported as actionResult 153 with errorInfo 1504', async () => {
-    test.skip(!IS_MOCK, 'Requires timeout injection');
+  test('[BIO-05] The 30-second capture timeout is reported as actionResult 153 with errorInfo 1504', { tag: '@mock-only' }, async () => {
     const res = await client.send('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 0, simulateTimeout: true });
     expect(res.response.actionResult.code).toBe(153);
     expect(res.response.errorInfo.code).toBe(1504);
   });
 
-  test('[BIO-06] Passive 1:1 authentication that completes inside the delay window sends no interim 1500 frame', async () => {
-    test.skip(!IS_MOCK, 'Requires deterministic passive timing');
+  test('[BIO-06] Passive 1:1 authentication that completes inside the delay window sends no interim 1500 frame', { tag: '@mock-only' }, async () => {
     const frames = await client.sendAndCollectAll('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 2.5 });
     expect(frames).toHaveLength(1);
     expect(frames[0].statusCode).toBe(200);
   });
 
-  test('[BIO-07] Expired token with the IDP reachable returns 153/1509 plus userInfo', async () => {
-    test.skip(!IS_MOCK, 'Requires a seeded user with expired tokens');
+  test('[BIO-07] Expired token with the IDP reachable returns 153/1509 plus userInfo', { tag: '@mock-only' }, async () => {
     const res = await client.send('/authenticate/biometric', { employeeId: 'expired_emp_01', uiDelay: 0 });
     expect(res.statusCode).toBe(200);
     expect(res.response.actionResult.code).toBe(153);
@@ -614,8 +585,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.modelUsed).toBe('mbfv1');
   });
 
-  test('[BIO-08] Expired token while the IDP is down returns 153/1510 plus cached userInfo', async () => {
-    test.skip(!IS_MOCK, 'Requires IDP fault injection');
+  test('[BIO-08] Expired token while the IDP is down returns 153/1510 plus cached userInfo', { tag: '@mock-only' }, async () => {
     await setMockState({ idpDown: true });
     const res = await client.send('/authenticate/biometric', { employeeId: 'expired_emp_01', uiDelay: 0 });
     expect(res.statusCode).toBe(200);
@@ -624,16 +594,14 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.response.userInfo.employeeId).toBe('expired_emp_01');
   });
 
-  test('[BIO-09] A cached user with neither a SiteMinder nor a PING token returns 1510 plus cached userInfo', async () => {
-    test.skip(!IS_MOCK, 'Requires a seeded user without tokens');
+  test('[BIO-09] A cached user with neither a SiteMinder nor a PING token returns 1510 plus cached userInfo', { tag: '@mock-only' }, async () => {
     const res = await client.send('/authenticate/biometric', { employeeId: 'notoken_emp_01', uiDelay: 0 });
     expect(res.statusCode).toBe(200);
     expect(res.response.errorInfo.code).toBe(1510);
     expect(res.response.userInfo.employeeId).toBe('notoken_emp_01');
   });
 
-  test('[OFF-01] Offline: 1:1 and 1:N biometric authentication succeed from the local cache while tokens are valid', async () => {
-    test.skip(!IS_MOCK, 'Requires offline simulation');
+  test('[OFF-01] Offline: 1:1 and 1:N biometric authentication succeed from the local cache while tokens are valid', { tag: '@mock-only' }, async () => {
     await setMockState({ offlineMode: true });
     const oneToOne = await client.send('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 0 });
     expect(oneToOne.statusCode).toBe(200);
@@ -642,8 +610,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(oneToN.statusCode).toBe(200);
   });
 
-  test('[OFF-02] Offline: an expired token returns 1510 with cached userInfo; unknown user returns 1506; face mismatch returns 1505', async () => {
-    test.skip(!IS_MOCK, 'Requires offline simulation');
+  test('[OFF-02] Offline: an expired token returns 1510 with cached userInfo; unknown user returns 1506; face mismatch returns 1505', { tag: '@mock-only' }, async () => {
     await setMockState({ offlineMode: true });
     const expired = await client.send('/authenticate/biometric', { employeeId: 'expired_emp_01', uiDelay: 0 });
     expect(expired.response.errorInfo.code).toBe(1510);
@@ -660,8 +627,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(mismatch.response.errorInfo.code).toBe(1505);
   });
 
-  test('[OFF-03] Offline: audit logs are queued locally as pending and are synced once connectivity returns and logs are uploaded', async () => {
-    test.skip(!IS_MOCK, 'Requires offline simulation and state inspection');
+  test('[OFF-03] Offline: audit logs are queued locally as pending and are synced once connectivity returns and logs are uploaded', { tag: '@mock-only' }, async () => {
     await setMockState({ offlineMode: true });
     const res = await client.send('/userinfo', { employeeId: 'rt00001' });
     let state = await inspectMockState();
@@ -677,8 +643,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // DB failure -> Memory mode
   // ===========================================================================
-  test('[DBF-01] After a database failure the agent stays up in Memory mode and keeps serving other requests', async () => {
-    test.skip(!IS_MOCK, 'Requires DB fault injection');
+  test('[DBF-01] After a database failure the agent stays up in Memory mode and keeps serving other requests', { tag: '@mock-only' }, async () => {
     const fail = await client.send('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 0, simulateDbError: true });
     expect(fail.statusCode).toBe(400);
     expect(fail.response.actionResult.code).toBe(950);
@@ -696,8 +661,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // DIGITAL TWIN
   // ===========================================================================
-  test('[TWN-01] 1:N: a single non-twin match authenticates, a single twin match or multiple matches require secondary verification (1512)', async () => {
-    test.skip(!IS_MOCK, 'Requires seeded twin data');
+  test('[TWN-01] 1:N: a single non-twin match authenticates, a single twin match or multiple matches require secondary verification (1512)', { tag: '@mock-only' }, async () => {
     const nonTwin = await client.send('/authenticate/biometric', { uiDelay: 0, simulatedMatchedEmployeeId: 'rt00001' });
     expect(nonTwin.statusCode).toBe(200);
 
@@ -710,8 +674,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(ambiguous.response.errorInfo.code).toBe(1512);
   });
 
-  test('[TWN-02] 1:1: a face mismatch returns 1505 even for a twin; a non-twin 1:1 match never asks for secondary verification', async () => {
-    test.skip(!IS_MOCK, 'Requires seeded twin data');
+  test('[TWN-02] 1:1: a face mismatch returns 1505 even for a twin; a non-twin 1:1 match never asks for secondary verification', { tag: '@mock-only' }, async () => {
     const mismatch = await client.send('/authenticate/biometric', {
       employeeId: 'twin_emp_01',
       uiDelay: 0,
@@ -723,16 +686,14 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(nonTwin.statusCode).toBe(200);
   });
 
-  test('[TWN-03] 1:1 twin: periodic_interval_minutes = 0 always requires secondary verification, even right after a credential login', async () => {
-    test.skip(!IS_MOCK, 'Requires twin interval configuration');
+  test('[TWN-03] 1:1 twin: periodic_interval_minutes = 0 always requires secondary verification, even right after a credential login', { tag: '@mock-only' }, async () => {
     await setMockState({ periodicIntervalMinutes: 0 });
     await client.send('/authenticate/credentials', { employeeId: 'twin_emp_01', password: 'TwinPassword123' });
     const res = await client.send('/authenticate/biometric', { employeeId: 'twin_emp_01', uiDelay: 0 });
     expect(res.response.errorInfo.code).toBe(1512);
   });
 
-  test('[TWN-04] 1:1 twin: secondary verification is valid only inside the interval and a successful biometric does not extend it', async () => {
-    test.skip(!IS_MOCK, 'Requires twin interval configuration');
+  test('[TWN-04] 1:1 twin: secondary verification is valid only inside the interval and a successful biometric does not extend it', { tag: '@mock-only' }, async () => {
     await setMockState({ periodicIntervalMinutes: 0.01 }); // 600 ms window from the credential login
     const cred = await client.send('/authenticate/credentials', { employeeId: 'twin_emp_01', password: 'TwinPassword123' });
     expect(cred.statusCode).toBe(200);
@@ -746,14 +707,12 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(outside.response.errorInfo.code).toBe(1512);
   });
 
-  test('[TWN-05] 1:1 twin: a never-authenticated twin (no last_authenticated_at) requires a challenge', async () => {
-    test.skip(!IS_MOCK, 'Requires seeded twin data');
+  test('[TWN-05] 1:1 twin: a never-authenticated twin (no last_authenticated_at) requires a challenge', { tag: '@mock-only' }, async () => {
     const res = await client.send('/authenticate/biometric', { employeeId: 'twin_emp_01', uiDelay: 0 });
     expect(res.response.errorInfo.code).toBe(1512);
   });
 
-  test('[TWN-06] Secondary verification by barcode, or by /userinfo with assignStore=true, clears the 1512 challenge', async () => {
-    test.skip(!IS_MOCK, 'Requires seeded twin data');
+  test('[TWN-06] Secondary verification by barcode, or by /userinfo with assignStore=true, clears the 1512 challenge', { tag: '@mock-only' }, async () => {
     // via barcode
     const reg = await client.send('/register/barcode', { employeeId: 'twin_emp_01', pin: '1111', validity: 300 });
     const auth = await client.send('/authenticate/barcode', { barcodeData: reg.response.barcodeData, pin: '1111' });
@@ -773,8 +732,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /register/barcode and /authenticate/barcode
   // ===========================================================================
-  test('[BAR-01] Barcode creation returns code 602 with barcodeData and the owner first/middle/last name (empty strings when unknown)', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[BAR-01] Barcode creation returns code 602 with barcodeData and the owner first/middle/last name (empty strings when unknown)', { tag: '@live-mutating' }, async () => {
     const res = await client.send('/register/barcode', { employeeId: 'rt00001', pin: '4354', validity: 300 });
     expect(res.statusCode).toBe(200);
     expect(res.response.actionResult.code).toBe(602);
@@ -784,7 +742,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.response.firstName).toBe('Amina-Louise');
   });
 
-  test('[BAR-02] Barcode creation without employeeId or validity returns 652/9510', async () => {
+  test('[BAR-02] Barcode creation without employeeId or validity returns 652/9510', { tag: '@live' }, async () => {
     const noEmployee = await client.send('/register/barcode', { pin: '4354', validity: 300 });
     expect(noEmployee.statusCode).toBe(400);
     expect(noEmployee.response.actionResult.code).toBe(652);
@@ -793,8 +751,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(noValidity.response.errorInfo.code).toBe(9510);
   });
 
-  test('[BAR-03] FallBackAuthWithPinEnabled=N makes the PIN optional; =Y makes it mandatory for creation', async () => {
-    test.skip(!IS_MOCK, 'Requires configuration toggling');
+  test('[BAR-03] FallBackAuthWithPinEnabled=N makes the PIN optional; =Y makes it mandatory for creation', { tag: '@mock-only' }, async () => {
     const withFlagY = await client.send('/register/barcode', { employeeId: 'rt00001', validity: 300 });
     expect(withFlagY.statusCode).toBe(400);
     expect(withFlagY.response.errorInfo.code).toBe(9510);
@@ -807,8 +764,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(auth.response.actionResult.code).toBe(603);
   });
 
-  test('[BAR-04] Generated barcodes are 13 characters, "BI"-prefixed and unique', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[BAR-04] Generated barcodes are 13 characters, "BI"-prefixed and unique', { tag: '@live-mutating' }, async () => {
     const seen = new Set<string>();
     for (let i = 0; i < 15; i++) {
       const res = await client.send('/register/barcode', { employeeId: 'rt00001', pin: '4354', validity: 60 });
@@ -818,8 +774,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(seen.size).toBe(15);
   });
 
-  test('[BAR-05] A barcode stops working after its validity (seconds) has elapsed, returning 653/6522', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[BAR-05] A barcode stops working after its validity (seconds) has elapsed, returning 653/6522', { tag: '@live-mutating' }, async () => {
     const reg = await client.send('/register/barcode', { employeeId: 'rt00001', pin: '4354', validity: 1 });
     const fresh = await client.send('/authenticate/barcode', { barcodeData: reg.response.barcodeData, pin: '4354' });
     expect(fresh.statusCode).toBe(200);
@@ -830,7 +785,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(expired.response.errorInfo.code).toBe(6522);
   });
 
-  test('[BAR-06] Barcode authentication rejects a missing barcodeData (9510) and an unknown barcode (6522)', async () => {
+  test('[BAR-06] Barcode authentication rejects a missing barcodeData (9510) and an unknown barcode (6522)', { tag: '@live' }, async () => {
     const missing = await client.send('/authenticate/barcode', { pin: '4354' });
     expect(missing.statusCode).toBe(400);
     expect(missing.response.actionResult.code).toBe(653);
@@ -841,8 +796,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(unknown.response.errorInfo.code).toBe(6522);
   });
 
-  test('[BAR-07] Barcode login: isLogin=true stores credentialType "barcode" with the correlationID; employeeId in the payload is optional', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[BAR-07] Barcode login: isLogin=true stores credentialType "barcode" with the correlationID; employeeId in the payload is optional', { tag: '@live-mutating' }, async () => {
     const reg = await client.send('/register/barcode', { employeeId: 'rt00001', pin: '4354', validity: 300 });
     const auth = await client.send('/authenticate/barcode', {
       barcodeData: reg.response.barcodeData,
@@ -855,8 +809,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(auth.response.userInfo.employeeId).toBe('rt00001');
   });
 
-  test('[BAR-08] A temporary employee with an expired profile cannot create a barcode (6500)', async () => {
-    test.skip(!IS_MOCK, 'Requires an already-expired profile');
+  test('[BAR-08] A temporary employee with an expired profile cannot create a barcode (6500)', { tag: '@mock-only' }, async () => {
     await registerTemp('T_EXPIRED_BC', { profileExpiryTimestamp: Math.floor(Date.now() / 1000) - 60 });
     const res = await client.send('/register/barcode', { employeeId: 'T_EXPIRED_BC', pin: '4354', validity: 300 });
     expect(res.statusCode).toBe(400);
@@ -867,7 +820,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // TEMPORARY EMPLOYEES: registration, offline use, revalidation
   // ===========================================================================
-  test('[TMP-01] /register/tempEmployee with an empty or incomplete payload is rejected with 951/9510', async () => {
+  test('[TMP-01] /register/tempEmployee with an empty or incomplete payload is rejected with 951/9510', { tag: '@live' }, async () => {
     for (const payload of [{}, { employeeId: 'T_MISSING_01', firstName: 'No' }]) {
       const res = await client.send('/register/tempEmployee', payload);
       expect(res.statusCode).toBe(400);
@@ -876,8 +829,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     }
   });
 
-  test('[TMP-02] Offline temp user can use a PIN barcode locally; once IdPs are back the local profile is not served (6522)', async () => {
-    test.skip(!IS_MOCK, 'Requires offline simulation');
+  test('[TMP-02] Offline temp user can use a PIN barcode locally; once IdPs are back the local profile is not served (6522)', { tag: '@mock-only' }, async () => {
     await setMockState({ offlineMode: true });
     await registerTemp('OFFLINE_TEMP_BC');
     const reg = await client.send('/register/barcode', { employeeId: 'OFFLINE_TEMP_BC', pin: '4321', validity: 300 });
@@ -901,8 +853,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(online.response.errorInfo.code).toBe(6522);
   });
 
-  test('[TMP-03] Revalidation when IdPs return: profile found in the same store succeeds and replaces the offline profile', async () => {
-    test.skip(!IS_MOCK, 'Requires offline simulation');
+  test('[TMP-03] Revalidation when IdPs return: profile found in the same store succeeds and replaces the offline profile', { tag: '@mock-only' }, async () => {
     await setMockState({ offlineMode: true });
     const reg = await registerTemp('REVAL_SAME_STORE');
     await client.send('/register/biometric', { employeeId: 'REVAL_SAME_STORE', loginCorrelationID: reg.correlationID });
@@ -919,8 +870,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(second.storeIdMismatch).toBeUndefined();
   });
 
-  test('[TMP-04] Revalidation when IdPs return: profile found in another store returns 1509 with storeIdMismatch=true and is not cached', async () => {
-    test.skip(!IS_MOCK, 'Requires offline simulation');
+  test('[TMP-04] Revalidation when IdPs return: profile found in another store returns 1509 with storeIdMismatch=true and is not cached', { tag: '@mock-only' }, async () => {
     await setMockState({ offlineMode: true });
     const reg = await registerTemp('REVAL_OTHER_STORE');
     await client.send('/register/biometric', { employeeId: 'REVAL_OTHER_STORE', loginCorrelationID: reg.correlationID });
@@ -932,8 +882,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     }
   });
 
-  test('[TMP-05] Revalidation when IdPs return: profile found in no store returns 1506 "User not found"', async () => {
-    test.skip(!IS_MOCK, 'Requires offline simulation');
+  test('[TMP-05] Revalidation when IdPs return: profile found in no store returns 1506 "User not found"', { tag: '@mock-only' }, async () => {
     await setMockState({ offlineMode: true });
     const reg = await registerTemp('REVAL_NO_STORE');
     await client.send('/register/biometric', { employeeId: 'REVAL_NO_STORE', loginCorrelationID: reg.correlationID });
@@ -943,8 +892,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.response.errorInfo.code).toBe(1506);
   });
 
-  test('[TMP-06] Offline biometric enrollment is only allowed for temporary (tempRegistration) users', async () => {
-    test.skip(!IS_MOCK, 'Requires offline simulation');
+  test('[TMP-06] Offline biometric enrollment is only allowed for temporary (tempRegistration) users', { tag: '@mock-only' }, async () => {
     await setMockState({ offlineMode: true });
     const res = await client.send('/register/biometric', {
       employeeId: 'rt00001',
@@ -957,8 +905,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /terminate/transaction
   // ===========================================================================
-  test('[TRM-01] Terminating one in-flight transaction cancels it silently and lets other in-flight transactions complete with 102', async () => {
-    test.skip(!IS_MOCK, 'Requires deterministic in-flight transactions');
+  test('[TRM-01] Terminating one in-flight transaction cancels it silently and lets other in-flight transactions complete with 102', { tag: '@mock-only' }, async () => {
     const cancelled = `e2e-cancel-${Date.now()}`;
     const survivor = `e2e-survive-${Date.now()}`;
     const cancelledP = client
@@ -982,7 +929,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /userinfo
   // ===========================================================================
-  test('[USR-01] /userinfo for an unknown employee returns 651/6500, with or without assignStore', async () => {
+  test('[USR-01] /userinfo for an unknown employee returns 651/6500, with or without assignStore', { tag: '@live' }, async () => {
     for (const assignStore of [false, true]) {
       const res = await client.send('/userinfo', { employeeId: 'unknown_999', assignStore });
       expect(res.statusCode).toBe(400);
@@ -991,8 +938,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     }
   });
 
-  test('[USR-02] /userinfo returns the stored credentialType and credentialRefId, and assigns store/workstation when assignStore=true', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[USR-02] /userinfo returns the stored credentialType and credentialRefId, and assigns store/workstation when assignStore=true', { tag: '@live-mutating' }, async () => {
     const login = await client.send('/authenticate/credentials', {
       employeeId: 'rt00001',
       password: 'SecretPassword123',
@@ -1007,9 +953,8 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(assigned.response.userInfo.workstation).toBeTruthy();
   });
 
-  test('[USR-03] /userinfo without assignStore does not assign store_id or workstation', async () => {
+  test('[USR-03] /userinfo without assignStore does not assign store_id or workstation', { tag: '@mock-only' }, async () => {
     // Mock-only: on a live agent the profile may already carry a store from earlier use.
-    test.skip(!IS_MOCK, 'Requires a profile with no store assignment');
     const plain = await client.send('/userinfo', { employeeId: 'rt00001' });
     expect(plain.statusCode).toBe(200);
     expect(plain.response.userInfo.store_id).toBeUndefined();
@@ -1019,16 +964,14 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /forgetMe
   // ===========================================================================
-  test('[FGT-01] /forgetMe for an unknown employee returns 651/6500', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[FGT-01] /forgetMe for an unknown employee returns 651/6500', { tag: '@live-mutating' }, async () => {
     const res = await client.send('/forgetMe', { employeeId: 'unknown_999' });
     expect(res.statusCode).toBe(400);
     expect(res.response.actionResult.code).toBe(651);
     expect(res.response.errorInfo.code).toBe(6500);
   });
 
-  test('[FGT-02] /forgetMe without deleteFaceId succeeds and removes the cached profile', async () => {
-    test.skip(!CAN_MUTATE, MUTATION_SKIP);
+  test('[FGT-02] /forgetMe without deleteFaceId succeeds and removes the cached profile', { tag: '@live-mutating' }, async () => {
     const id = uniqueId('T_FGT');
     expect((await registerTemp(id)).statusCode).toBe(200);
     const res = await client.send('/forgetMe', { employeeId: id });
@@ -1037,8 +980,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(after.response.errorInfo.code).toBe(6500);
   });
 
-  test('[FGT-03] If the biometric (UUID) deletion fails the agent returns 9506 and keeps the cached profile', async () => {
-    test.skip(!IS_MOCK, 'Requires cloud deletion failure injection');
+  test('[FGT-03] If the biometric (UUID) deletion fails the agent returns 9506 and keeps the cached profile', { tag: '@mock-only' }, async () => {
     const res = await client.send('/forgetMe', { employeeId: 'rt00001', deleteFaceId: 'true', simulateDeleteFailure: true });
     expect(res.statusCode).toBe(400);
     expect(res.response.actionResult.code).toBe(950);
@@ -1051,14 +993,14 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // /uploadLogs
   // ===========================================================================
   for (const logType of ['error', 'info', 'debug', 'all']) {
-    test(`[UPL-01] /uploadLogs accepts logType "${logType}"`, async () => {
+    test(`[UPL-01] /uploadLogs accepts logType "${logType}"`, { tag: '@live' }, async () => {
       const res = await client.send('/uploadLogs', { logType });
       expect(res.statusCode).toBe(200);
       expect(res.response.actionResult.code).toBe(900);
     });
   }
 
-  test('[UPL-02] /uploadLogs rejects an unsupported or missing logType with 950/9500', async () => {
+  test('[UPL-02] /uploadLogs rejects an unsupported or missing logType with 950/9500', { tag: '@live' }, async () => {
     for (const payload of [{ logType: 'verbose' }, {}]) {
       const res = await client.send('/uploadLogs', payload);
       expect(res.statusCode).toBe(400);
@@ -1070,8 +1012,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /setConfiguration
   // ===========================================================================
-  test('[CFG-01] Changing a restart-requiring key restarts the agent once; an unchanged value or a non-critical key does not', async () => {
-    test.skip(!IS_MOCK, 'Requires restart counter inspection');
+  test('[CFG-01] Changing a restart-requiring key restarts the agent once; an unchanged value or a non-critical key does not', { tag: '@mock-only' }, async () => {
     const current = (await inspectMockState()).config.backend_url;
     await client.send('/setConfiguration', { configurations: { backend_url: current } });
     expect((await inspectMockState()).restartCount).toBe(0);
@@ -1085,8 +1026,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect((await inspectMockState()).restartCount).toBe(1);
   });
 
-  test('[CFG-02] /setConfiguration persists the supplied key/value pairs', async () => {
-    test.skip(!IS_MOCK, 'Requires state inspection');
+  test('[CFG-02] /setConfiguration persists the supplied key/value pairs', { tag: '@mock-only' }, async () => {
     await client.send('/setConfiguration', {
       configurations: { BarcodeExpiryTime: 450, BarcodeScanMaxAttempts: 3, FallBackAuthEnabled: 'N' },
     });
@@ -1096,7 +1036,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(config.FallBackAuthEnabled).toBe('N');
   });
 
-  test('[CFG-03] /setConfiguration with a missing or empty configurations object is rejected with 950/9500', async () => {
+  test('[CFG-03] /setConfiguration with a missing or empty configurations object is rejected with 950/9500', { tag: '@live' }, async () => {
     for (const payload of [{}, { configurations: {} }]) {
       const res = await client.send('/setConfiguration', payload);
       expect(res.statusCode).toBe(400);
@@ -1108,7 +1048,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /user/token
   // ===========================================================================
-  test('[TOK-01] /user/token returns one token when one type is requested, each with createdAt and expiresIn', async () => {
+  test('[TOK-01] /user/token returns one token when one type is requested, each with createdAt and expiresIn', { tag: '@live' }, async () => {
     const res = await client.send('/user/token', { employeeId: 'rt00001', tokenType: ['PING'] });
     expect(res.statusCode).toBe(200);
     expect(res.response.actionResult.code).toBe(900);
@@ -1120,16 +1060,14 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(typeof token.expiresIn).toBe('number');
   });
 
-  test('[TOK-02] /user/token returns only the available token (still 200) when one of the requested types is unavailable', async () => {
-    test.skip(!IS_MOCK, 'Requires a seeded user with a PING token only');
+  test('[TOK-02] /user/token returns only the available token (still 200) when one of the requested types is unavailable', { tag: '@mock-only' }, async () => {
     const res = await client.send('/user/token', { employeeId: 'ping_only_emp_01', tokenType: ['PING', 'SM'] });
     expect(res.statusCode).toBe(200);
     expect(res.response.userTokens).toHaveLength(1);
     expect(res.response.userTokens[0].type).toBe('PING');
   });
 
-  test('[TOK-03] /user/token returns 400/1510 when the IDP is down', async () => {
-    test.skip(!IS_MOCK, 'IDP outage requires fault injection');
+  test('[TOK-03] /user/token returns 400/1510 when the IDP is down', { tag: '@mock-only' }, async () => {
     await setMockState({ idpDown: true });
     const res = await client.send('/user/token', { employeeId: 'rt00001', tokenType: ['PING'] });
     expect(res.statusCode).toBe(400);
@@ -1139,8 +1077,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /notify/bio-camera
   // ===========================================================================
-  test('[CAM-01] /notify/bio-camera ON/OFF are idempotent and always report 706 success', async () => {
-    test.skip(!IS_MOCK, 'Requires hardware toggle verification');
+  test('[CAM-01] /notify/bio-camera ON/OFF are idempotent and always report 706 success', { tag: '@mock-only' }, async () => {
     for (const action of ['OFF', 'OFF', 'ON', 'ON']) {
       const res = await client.send('/notify/bio-camera', { clientId: 'pos-01', action });
       expect(res.statusCode).toBe(200);
@@ -1150,8 +1087,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(hc.response.cameraStatus.cameraEnabled).toBe(true);
   });
 
-  test('[CAM-02] With DisableCamera or SilentModeEnabled set, an ON request succeeds but the camera stays OFF', async () => {
-    test.skip(!IS_MOCK, 'Requires configuration toggling');
+  test('[CAM-02] With DisableCamera or SilentModeEnabled set, an ON request succeeds but the camera stays OFF', { tag: '@mock-only' }, async () => {
     for (const flag of ['DisableCamera', 'SilentModeEnabled']) {
       await resetMockState();
       await setMockState({ config: { [flag]: true } });
@@ -1164,8 +1100,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     }
   });
 
-  test('[CAM-03] A scan with the camera OFF while a VV camera is open returns 952/9520 "Agent - Camera unavailable"', async () => {
-    test.skip(!IS_MOCK, 'Requires VV camera simulation');
+  test('[CAM-03] A scan with the camera OFF while a VV camera is open returns 952/9520 "Agent - Camera unavailable"', { tag: '@mock-only' }, async () => {
     await client.send('/notify/bio-camera', { clientId: 'pos-01', action: 'OFF' });
     await setMockState({ vvCameraOpen: true });
     const res = await client.send('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 0 });
@@ -1177,8 +1112,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // NON-GRAPHICAL (HEADLESS) MODE
   // ===========================================================================
-  test('[HDL-01] Headless: UI-dependent calls fail with 950/9500 and "UI cannot be initialized"', async () => {
-    test.skip(!IS_MOCK, 'Requires headless toggle');
+  test('[HDL-01] Headless: UI-dependent calls fail with 950/9500 and "UI cannot be initialized"', { tag: '@mock-only' }, async () => {
     await setMockState({ uiEnabled: false });
     const bio = await client.send('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 0 });
     expect(bio.statusCode).toBe(400);
@@ -1191,8 +1125,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(noPin.response.errorInfo.code).toBe(9500);
   });
 
-  test('[HDL-02] Headless: /healthCheck, /terminate/transaction, /register/barcode, /authenticate/barcode (with PIN), /authenticate/credentials, /userinfo and /forgetMe keep working', async () => {
-    test.skip(!IS_MOCK, 'Requires headless toggle');
+  test('[HDL-02] Headless: /healthCheck, /terminate/transaction, /register/barcode, /authenticate/barcode (with PIN), /authenticate/credentials, /userinfo and /forgetMe keep working', { tag: '@mock-only' }, async () => {
     await setMockState({ uiEnabled: false });
     expect((await client.send('/healthCheck')).statusCode).toBe(200);
     expect((await client.send('/terminate/transaction', { targetCorrelationID: 'none' })).response.errorInfo.code).toBe(9503);
