@@ -1,11 +1,12 @@
 # Charlie StoreOS Security Agent — End-to-End Playwright Automation Suite
 
+**Running against a real agent? Start here: [`README-LIVE.md`](README-LIVE.md).**
+
 Portable, self-contained TypeScript + Playwright WebSocket E2E test suite for the **Charlie StoreOS Security Agent** specification. Against the built-in mock agent it exercises every endpoint, error code, UI guidance translation, and resilience scenario in the specification. Against a real agent only a subset runs; see [What this suite covers: mock vs. live](#what-this-suite-covers-mock-vs-live).
 
 ## Documentation and traceability
 * [`docs/REQUIREMENTS_TRACEABILITY.md`](docs/REQUIREMENTS_TRACEABILITY.md) maps every requirement in the four source documents to an automated test (`T01`-`T37`, or a tagged ID such as `[BAR-05]`) or to a written manual test case, marks each automated requirement as **mock-only** or **mock + live**, and lists the places where the source documents disagree.
 * `tests/security-agent.e2e.spec.ts` holds the core end-to-end scenarios; `tests/spec-coverage.e2e.spec.ts` holds the requirement-tagged specification tests.
-* [`README-LIVE.md`](README-LIVE.md) is the stand-alone guide for running the live suites against a real agent.
 
 ## What this suite covers: mock vs. live
 
@@ -86,9 +87,9 @@ README-LIVE.md                        Client guide for running the live suites
 | `AGENT_WS_URL` | `ws://127.0.0.1:8080` | Agent WebSocket URL; required by the `live` and `live-mutating` projects |
 | `USE_MOCK_AGENT` | unset | Alias: `false` selects the `live` project |
 | `ALLOW_LIVE_MUTATIONS` | unset | Alias: with `USE_MOCK_AGENT=false`, `true` selects the `live-mutating` project |
+| `HEARTBEAT_MS` | `60000` (`400` in tests) | Mock heartbeat interval for `/healthStatusUpdate` |
 
 `--project` and the aliases must agree; a conflicting combination, or more than one `--project`, stops the run with an error.
-| `HEARTBEAT_MS` | `60000` (`400` in tests) | Mock heartbeat interval for `/healthStatusUpdate` |
 
 ## Continuous Integration
 GitHub Actions (`.github/workflows/e2e.yml`) installs with `npm ci`, type-checks with `tsc --noEmit`, runs the suite against the mock agent (once, and in a second job twice in a row with `--repeat-each=2` and no retries, to catch order-dependent tests), and uploads `playwright-report/` and `test-results/` as artifacts. It uses read-only permissions and a 10-minute timeout.
@@ -112,4 +113,12 @@ Tests that create, change or delete data (temp registration, face enrollment, ba
 ```bash
 AGENT_WS_URL=ws://<ip>:8080 npm run test:live:mutating
 ```
-On Windows PowerShell, set the variable first (`$env:AGENT_WS_URL='ws://<ip>:8080'`) and then run the npm script. The older form `USE_MOCK_AGENT=false [ALLOW_LIVE_MUTATIONS=true] npm test` still works.
+`<ip>` is a placeholder: replace it with the agent's real address, for example `ws://192.0.2.10:8080`.
+
+On Windows PowerShell, set the variable first (`$env:AGENT_WS_URL='ws://<ip>:8080'`) and then run the npm script. In Windows Command Prompt, set it and run in one line, with no space before `&&` (a space would become part of the address), and write the address without `<` `>`, which Command Prompt treats as redirection:
+```bat
+set AGENT_WS_URL=ws://REAL-ADDRESS:8080&& npm run test:live
+```
+In Command Prompt the variable stays set in that window until you clear it with `set AGENT_WS_URL=`.
+
+The older form `USE_MOCK_AGENT=false [ALLOW_LIVE_MUTATIONS=true] npm test` still works.
