@@ -15,7 +15,7 @@ STUDY, LAYMAN and TECH are summaries of SPEC. Where they disagree with SPEC, thi
 
 ## 1. How to read this document
 
-* **Automated**: a Playwright test asserts the requirement. Core tests are numbered `01`-`37` in their titles and referred to here as `T01`-`T37` (file `tests/security-agent.e2e.spec.ts`). Specification tests carry a requirement tag such as `[BAR-05]` in the title (file `tests/spec-coverage.e2e.spec.ts`).
+* **Automated**: a Playwright test asserts the requirement. Core tests are numbered `01`-`37` in their titles and referred to here as `T01`-`T37` (file `tests/security-agent.e2e.spec.ts`). Numbers are kept stable when a test is removed, so there are gaps; see "Retired core test IDs" below. Specification tests carry a requirement tag such as `[BAR-05]` in the title (file `tests/spec-coverage.e2e.spec.ts`).
 * **Mock only**: the test needs the mock agent's control plane (fault injection or state inspection). It is skipped against a live agent.
 * **Manual**: the requirement is about the installer, operating system, files, hardware, cloud back end or screen layout. It cannot be proven through the WebSocket API. A manual test case (`MTC-nn`) is written in section 4 so it can still be executed and signed off.
 * **Spec gap**: the specification does not define the behaviour, so no pass/fail can be written. Listed in section 5.
@@ -37,11 +37,29 @@ A note in brackets after a label means only part of the row runs live. Totals ac
 
 | Mode | Command | Result |
 |---|---|---|
-| Mock agent (default) | `npm test` | 135 executed, 135 pass |
-| Live agent, read-safe | `USE_MOCK_AGENT=false AGENT_WS_URL=ws://<ip>:8080 npm test` | 29 executed, 106 skipped (need fault injection or data changes) |
-| Live agent, data changes allowed (disposable terminal only) | add `ALLOW_LIVE_MUTATIONS=true` | 46 executed, 89 skipped (need fault injection) |
+| Mock agent (default) | `npm test` | 126 executed, 126 pass |
+| Live agent, read-safe | `USE_MOCK_AGENT=false AGENT_WS_URL=ws://<ip>:8080 npm test` | 26 executed, 100 skipped (need fault injection or data changes) |
+| Live agent, data changes allowed (disposable terminal only) | add `ALLOW_LIVE_MUTATIONS=true` | 43 executed, 83 skipped (need fault injection) |
 
-The live-mode figures were obtained by running live mode against the mock's WebSocket port (last re-checked 2026-11-17 on `main` at `360817d`: 29 and 46 executed, 0 failed), so they prove the live subset does not depend on mock-only features. They are **not** a run against a real StoreOS agent. A run against a real agent is still required before sign-off.
+The live-mode figures were obtained by running live mode against the mock's WebSocket port (last re-checked 2026-11-17 on `main` at `d92a0b5` plus the test clean-up: 26 and 43 executed, 0 failed), so they prove the live subset does not depend on mock-only features. They are **not** a run against a real StoreOS agent. A run against a real agent is still required before sign-off.
+
+### Retired core test IDs
+
+These numbered tests were removed because a tagged test asserts the same thing. Their numbers are not reused.
+
+| Retired | Now covered by | Merged into the tagged test |
+|---|---|---|
+| T02 | LOG-01 | 9502 error code; ErrorLog entry's `actionPerformed` and `errorCode` |
+| T19 | UPL-01, UPL-02 | nothing (already covered) |
+| T21 | HDL-01, HDL-02 | nothing (already covered) |
+| T22 | DBF-01 | `/healthCheck` returns 200 in Memory mode |
+| T24 | TMP-01 | incomplete payload (`employeeId` + `firstName` only) |
+| T29 | CFG-03 | empty `configurations: {}` object |
+| T31 | TRM-01 | nothing (already covered) |
+| T32 | TRM-01 | the untouched transaction returns action code 102 |
+| T33 | BIO-04 | `statusCode` 400 for multiple faces |
+
+T10 was reduced to its 1:1 face-mismatch check; its capture-timeout and glasses-guidance checks are covered by BIO-05 and UIG-01.
 
 ## 2. Automated coverage by requirement
 
@@ -63,9 +81,9 @@ The live-mode figures were obtained by running live mode against the mock's WebS
 | Requirement | Source | Tests | Coverage |
 |---|---|---|---|
 | Successful `/healthCheck` is not in SecurityLog | SPEC Logging 17.2 | T01 | **mock-only** (T01 runs live, but its SecurityLog check runs only on the mock) |
-| Failed `/healthCheck` goes to ErrorLog, not SecurityLog | SPEC Logging 18.2 | T02, LOG-01 | **mock-only** |
+| Failed `/healthCheck` goes to ErrorLog, not SecurityLog | SPEC Logging 18.2 | LOG-01 | **mock-only** |
 | All other calls are logged in SecurityLog with appId `StoreOS`, employeeId, storeId, machineId, timestamp, correlationId, timeTakenMs, actionResult string | SPEC SecurityLog | LOG-02, LOG-04 | **mock-only** |
-| Errors are logged in ErrorLog with errorCode, errorMessage, correlationId, timeTakenMs | SPEC ErrorLog | T02, LOG-03 | **mock-only** |
+| Errors are logged in ErrorLog with errorCode, errorMessage, correlationId, timeTakenMs | SPEC ErrorLog | LOG-01, LOG-03 | **mock-only** |
 | Passwords are never in responses or logs (API level) | SPEC Important pt 9 | LOG-05 (file-level check: MTC-06) | **mock-only** |
 
 ### 2.3 Health (SPEC `/healthCheck`, `/healthStatusUpdate`)
@@ -73,10 +91,10 @@ The live-mode figures were obtained by running live mode against the mock's WebS
 | Requirement | Source | Tests | Coverage |
 |---|---|---|---|
 | `/healthCheck` returns service, camera, database connection, `databaseMode`, `uiStatus` | SPEC healthCheck; Dec 10 2025 | T01, HEA-01 | **mock + live** |
-| `databaseMode` is `Memory` after a DB failure | SPEC healthCheck; DB failure | T22, DBF-01 | **mock-only** |
+| `databaseMode` is `Memory` after a DB failure | SPEC healthCheck; DB failure | DBF-01 | **mock-only** |
 | IDP outage reported as `idpStatus` DOWN / `allServicesDown` / 1515 while still returning 200 | SPEC healthCheck; Jul 29 2025 | HEA-02 | **mock-only** |
 | `uiStatus` is -1 without a graphical session | SPEC healthCheck | HEA-03 | **mock-only** |
-| Health check failure returns 9502 | SPEC healthCheck | T02 | **mock-only** |
+| Health check failure returns 9502 | SPEC healthCheck | LOG-01 | **mock-only** |
 | `/healthStatusUpdate` heartbeat is pushed to connected clients without a request | SPEC healthStatusUpdate 4.2 | HSU-01 | **mock-only** |
 | Event-driven update on camera change | SPEC healthStatusUpdate 4.4 | HSU-02 | **mock-only** |
 | Event-driven update on connectivity change | SPEC healthStatusUpdate 4.4 | HSU-03 | **mock-only** |
@@ -121,7 +139,7 @@ The live-mode figures were obtained by running live mode against the mock's WebS
 | 1:N search when employeeId omitted; returns uuid and userInfo | SPEC biometric 9-10 | BIO-01 | **mock-only** |
 | employeeId not in cache: 1506; 1:N no match: 1506 | SPEC biometric 8.2, 11.4 | BIO-02 | **mock-only** |
 | Face mismatch: 153/1505 | SPEC biometric 10 | T10, TWN-02, OFF-02 | **mock-only** |
-| Capture timeout: 153/1504 | SPEC failure case | T10, BIO-05 | **mock-only** |
+| Capture timeout: 153/1504 | SPEC failure case | BIO-05 | **mock-only** |
 | Interim re-scan prompts: 1503 no face, 1501 multiple faces, 1502 poor quality | SPEC register biometric 6.3 | BIO-04 | **mock-only** |
 | Interim 1500 sent once for passive 1:N | SPEC biometric 4.6.4 | T09 | **mock-only** |
 | No interim when authentication completes inside the delay window | SPEC biometric 4.6.3 | BIO-06 | **mock-only** |
@@ -130,13 +148,13 @@ The live-mode figures were obtained by running live mode against the mock's WebS
 | Expired token, IDP reachable: 153/1509 with userInfo | SPEC biometric 8 | BIO-07 | **mock-only** |
 | Expired token, IDP down: 153/1510 with userInfo | SPEC biometric 8 | BIO-08, OFF-02 | **mock-only** |
 | No sessionToken and no access_token: 1510 with userInfo | SPEC biometric 5.2 | BIO-09 | **mock-only** |
-| DB error: 950/9524 and automatic switch to Memory mode | SPEC DB failure | T22, DBF-01 | **mock-only** |
+| DB error: 950/9524 and automatic switch to Memory mode | SPEC DB failure | DBF-01 | **mock-only** |
 | After the switch the agent keeps serving requests | SPEC DB failure 2 | DBF-01 | **mock-only** |
 | Closing the UI: 9509 | SPEC UI definition | UI-01 | **mock-only** |
 
 ### 2.7 CVS feedback message translation (SPEC "Feedback Messages", TECH sec. 4)
 
-All 20 rows of the table are asserted individually (`[UIG-01]`), plus T10 for the original three. Row "Invalid face background" maps to "N/A" in the spec, meaning no message; see section 5.
+All 20 rows of the table are asserted individually (`[UIG-01]`). Row "Invalid face background" maps to "N/A" in the spec, meaning no message; see section 5.
 
 Coverage: **mock-only**. Every translation test drives the mock's `simulateVisionCode` hook, so none of them runs against a live agent.
 
@@ -177,7 +195,7 @@ Coverage: **mock-only**. Every translation test drives the mock's `simulateVisio
 | Missing barcodeData: 653/9510; unknown barcode: 6522 | SPEC authenticate barcode 4.3 | BAR-06 | **mock + live** |
 | `isLogin=true` stores credentialType `barcode` | SPEC authenticate barcode | BAR-07 | **mock + live †** |
 | Temp-registered barcode usable offline with PIN, rejected (6522) once IdPs are back | SPEC offline temp 2-3 | TMP-02 | **mock-only** |
-| Barcode with PIN works in headless mode; without PIN returns 9500 | SPEC non-graphical 4.4 | T21, HDL-01, HDL-02 | **mock-only** |
+| Barcode with PIN works in headless mode; without PIN returns 9500 | SPEC non-graphical 4.4 | HDL-01, HDL-02 | **mock-only** |
 | TECH TC03 (create and validate) | TECH | T12, BAR-07 | **mock + live †** |
 
 ### 2.10 Temporary and offline employees
@@ -185,7 +203,7 @@ Coverage: **mock-only**. Every translation test drives the mock's `simulateVisio
 | Requirement | Source | Tests | Coverage |
 |---|---|---|---|
 | `/register/tempEmployee` success returns 900 | SPEC tempEmployee | T06 | **mock + live †** |
-| Empty or incomplete payload: 951/9510 | SPEC tempEmployee 4.2 | TMP-01, T24 | **mock + live** |
+| Empty or incomplete payload: 951/9510 | SPEC tempEmployee 4.2 | TMP-01 | **mock + live** |
 | Duplicate temp profile: 1511 | SPEC | T25 | **mock + live †** |
 | Offline registration, enrollment and biometric authentication for temp users | SPEC offline 1-2 | T23 | **mock-only** |
 | Valid profile authenticates; expired profile rejected with 1506 | SPEC biometric 8.1.4 | T35, T36 | **mock + live †** (T36, the expired-profile case, is mock-only) |
@@ -212,14 +230,14 @@ Coverage: **mock-only**. Every translation test drives the mock's `simulateVisio
 | `/userinfo` returns credentialType and credentialRefId | SPEC userinfo step 6 | USR-02 | **mock + live †** |
 | `/userinfo` 90-minute refresh with `DisableUserSync` / `SilentModeEnabled` | SPEC userinfo step 3 | MTC-23 | **manual only** |
 | `/terminate/transaction` unknown target: 950/9503 | SPEC terminate | T18 | **mock + live** |
-| `/terminate/transaction` cancels an in-flight transaction (200/900) | SPEC terminate 4.3-4.4 | T31 | **mock-only** |
+| `/terminate/transaction` cancels an in-flight transaction (200/900) | SPEC terminate 4.3-4.4 | TRM-01 | **mock-only** |
 | Only the targeted transaction is terminated | SPEC terminate 4.3 | TRM-01 | **mock-only** |
-| Transaction that is not terminated completes normally | SPEC terminate | T32 | **mock-only** |
+| Transaction that is not terminated completes normally | SPEC terminate | TRM-01 | **mock-only** |
 | `/forgetMe` success removes the profile; later lookups return 6500 | SPEC forgetMe | T20 | **mock + live †** |
 | `/forgetMe` unknown employee: 651/6500; `deleteFaceId` optional | SPEC forgetMe 4.2-4.3 | FGT-01, FGT-02 | **mock + live †** |
 | `/forgetMe` deletion failure: 9506, profile kept | SPEC forgetMe 4.4 | FGT-03 | **mock-only** |
-| `/uploadLogs` accepts `error`, `info`, `debug`, `all` | SPEC uploadLogs | T19, UPL-01 | **mock + live** |
-| `/uploadLogs` rejects other or missing `logType` | SPEC uploadLogs 8.1 | T19, UPL-02 | **mock + live** |
+| `/uploadLogs` accepts `error`, `info`, `debug`, `all` | SPEC uploadLogs | UPL-01 | **mock + live** |
+| `/uploadLogs` rejects other or missing `logType` | SPEC uploadLogs 8.1 | UPL-02 | **mock + live** |
 | `/setConfiguration` applies settings; empty payload rejected | SPEC setConfiguration | CFG-02, CFG-03 | **mock + live** (only CFG-03, the empty-payload rejection, runs live; CFG-02, applying settings, is mock-only) |
 | Restart only when a restart-requiring key actually changes | SPEC automatic self-restart | T17, CFG-01 | **mock-only** |
 | `/user/token` returns PING and SM tokens with `createdAt` and `expiresIn` | SPEC user/token | T15, TOK-01 | **mock + live** |
@@ -235,8 +253,8 @@ Coverage: **mock-only**. Every translation test drives the mock's `simulateVisio
 
 | Requirement | Source | Tests | Coverage |
 |---|---|---|---|
-| UI-dependent calls return 950/9500 with message "UI cannot be initialized" | SPEC | T21, HDL-01 | **mock-only** |
-| `/healthCheck`, `/terminate/transaction`, `/register/barcode`, `/authenticate/barcode` with PIN, `/authenticate/credentials`, `/userinfo`, `/forgetMe` keep working | SPEC non-graphical 4 | T21, HDL-02 | **mock-only** |
+| UI-dependent calls return 950/9500 with message "UI cannot be initialized" | SPEC | HDL-01 | **mock-only** |
+| `/healthCheck`, `/terminate/transaction`, `/register/barcode`, `/authenticate/barcode` with PIN, `/authenticate/credentials`, `/userinfo`, `/forgetMe` keep working | SPEC non-graphical 4 | HDL-02 | **mock-only** |
 | Agent starts and accepts connections without a graphical target | SPEC non-graphical 1-2 | MTC-03 | **manual only** |
 
 ## 3. Sample payloads from TECH section 6
@@ -247,7 +265,7 @@ Coverage: **mock-only**. Every translation test drives the mock's `simulateVisio
 | TC02 credentials success | Covered by T03 |
 | TC03 barcode create and validate | Covered by T12 and BAR-07 |
 | TC04 twin returns 1512 | Covered by T11 and TWN-05 |
-| TC05 terminate an unknown target returns 200 | **Not followed.** SPEC defines 400/9503 for an unknown target. T18 asserts 9503; T31 covers the successful terminate. See section 5, item 1. |
+| TC05 terminate an unknown target returns 200 | **Not followed.** SPEC defines 400/9503 for an unknown target. T18 asserts 9503; TRM-01 covers the successful terminate. See section 5, item 1. |
 
 ## 4. Manual test cases
 

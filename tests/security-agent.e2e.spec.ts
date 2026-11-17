@@ -42,20 +42,10 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     }
   });
 
-  test('02. /healthCheck failure is recorded in ErrorLog with error code 9502', async () => {
-    test.skip(!IS_MOCK, 'Requires mock failure injection');
-    const res = await client.send('/healthCheck', { simulateFailure: true });
-    expect(res.statusCode).toBe(400);
-    expect(res.response.errorInfo.code).toBe(9502);
-
-    const state = await inspectMockState();
-    expect(state.errorLogs.some((l: any) => l.actionPerformed === '/healthCheck' && l.errorCode === '9502')).toBe(true);
-  });
-
   // =========================================================================
   // 2. CREDENTIAL AUTHENTICATION (/authenticate/credentials)
   // =========================================================================
-  test('03. /authenticate/credentials succeeds for regular employee and persists credentialRefId when isLogin=true', async () => {
+  test('03. /authenticate/credentials succeeds for regular employee and returns credentialRefId = correlationID when isLogin=true', async () => {
     const res = await client.send('/authenticate/credentials', {
       employeeId: 'rt00001',
       password: 'SecretPassword123',
@@ -178,8 +168,9 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(frames[1].response.actionResult.code).toBe(102);
   });
 
-  test('10. /authenticate/biometric handles mismatch (1505), timeout (1504), and UI vision guidance translation', async () => {
+  test('10. /authenticate/biometric 1:1 face mismatch for a regular employee returns 400/1505', async () => {
     test.skip(!IS_MOCK, 'Requires vision fault injection');
+    // Capture timeout is covered by [BIO-05]; guidance translation by [UIG-01].
     const mismatch = await client.send('/authenticate/biometric', {
       employeeId: 'rt00001',
       uiDelay: 0,
@@ -187,21 +178,6 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     });
     expect(mismatch.statusCode).toBe(400);
     expect(mismatch.response.errorInfo.code).toBe(1505);
-
-    const timeout = await client.send('/authenticate/biometric', {
-      employeeId: 'rt00001',
-      uiDelay: 0,
-      simulateTimeout: true,
-    });
-    expect(timeout.response.errorInfo.code).toBe(1504);
-
-    const glasses = await client.send('/authenticate/biometric', {
-      employeeId: 'rt00001',
-      uiDelay: 0,
-      simulateVisionCode: 'Eyeglasses detected',
-    });
-    expect(glasses.response.errorInfo.code).toBe(1502);
-    expect(glasses.response.errorInfo.uiGuidance).toBe('Remove glasses');
   });
 
   test('11. Digital Twin detection triggers 1512 on 1:N or unverified 1:1, and clears after secondary auth', async () => {
@@ -315,7 +291,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(res.response.userInfo.workstation).toBeTruthy();
   });
 
-  test('15. /user/token retrieves and auto-refreshes expired PING and SM tokens', async () => {
+  test('15. /user/token returns usable PING and SM tokens, in request order, for a user whose stored tokens have expired', async () => {
     const res = await client.send('/user/token', {
       employeeId: 'expired_emp_01',
       tokenType: ['PING', 'SM'],
@@ -324,6 +300,10 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(res.response.userTokens).toHaveLength(2);
     expect(res.response.userTokens[0].type).toBe('PING');
     expect(res.response.userTokens[1].type).toBe('SM');
+    for (const token of res.response.userTokens) {
+      expect(token.token).toBeTruthy();
+      expect(token.expiresIn).toBeGreaterThan(0);
+    }
   });
 
   test('16. /notify/bio-camera toggles the camera; a scan with the camera OFF turns it back on when no VV camera is open', async () => {
@@ -378,16 +358,6 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(res.response.errorInfo.code).toBe(9503);
   });
 
-  test('19. /uploadLogs validates logType and syncs queued offline logs', async () => {
-    const badType = await client.send('/uploadLogs', { logType: 'invalid_type' });
-    expect(badType.statusCode).toBe(400);
-    expect(badType.response.errorInfo.code).toBe(9500);
-
-    const okUpload = await client.send('/uploadLogs', { logType: 'all' });
-    expect(okUpload.statusCode).toBe(200);
-    expect(okUpload.response.actionResult.code).toBe(900);
-  });
-
   test('20. /forgetMe wipes a user profile from cache and subsequent lookups return 6500', async () => {
     test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
     // Uses a throwaway temp employee so no real profile is ever deleted
@@ -411,62 +381,9 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   });
 
   // =========================================================================
-  // 7. EDGE & RESILIENCE MODES (HEADLESS 9500, DB->MEMORY FALLBACK, OFFLINE TEMP)
+  // 7. OFFLINE TEMP REGISTRATION & REVALIDATION
+  //    (headless mode: HDL-01/HDL-02; DB->Memory fallback: DBF-01 in spec-coverage)
   // =========================================================================
-  test('21. Non-graphical (Headless) mode returns 9500 for UI endpoints but allows PIN barcode & credentials', async () => {
-    test.skip(!IS_MOCK, 'Requires headless mode toggle');
-    await setMockState({ uiEnabled: false });
-
-    // UI biometric request fails with 9500
-    const bio = await client.send('/authenticate/biometric', {
-      employeeId: 'rt00001',
-      uiDelay: 0,
-    });
-    expect(bio.statusCode).toBe(400);
-    expect(bio.response.errorInfo.code).toBe(9500);
-
-    // Non-UI credential login still works
-    const cred = await client.send('/authenticate/credentials', {
-      employeeId: 'rt00001',
-      password: 'SecretPassword123',
-    });
-    expect(cred.statusCode).toBe(200);
-
-    // Barcode with PIN works in headless mode, without PIN fails with 9500
-    const reg = await client.send('/register/barcode', {
-      employeeId: 'rt00001',
-      pin: '4354',
-      validity: 300,
-    });
-    const noPin = await client.send('/authenticate/barcode', {
-      barcodeData: reg.response.barcodeData,
-    });
-    expect(noPin.response.errorInfo.code).toBe(9500);
-
-    const withPin = await client.send('/authenticate/barcode', {
-      barcodeData: reg.response.barcodeData,
-      pin: '4354',
-      employeeId: 'rt00001',
-    });
-    expect(withPin.statusCode).toBe(200);
-  });
-
-  test('22. Database corruption auto-switches Agent from DB mode to Memory mode without crashing', async () => {
-    test.skip(!IS_MOCK, 'Requires DB fault injection');
-    const failRes = await client.send('/authenticate/biometric', {
-      employeeId: 'rt00001',
-      uiDelay: 0,
-      simulateDbError: true,
-    });
-    expect(failRes.statusCode).toBe(400);
-    expect(failRes.response.errorInfo.code).toBe(9524);
-
-    // Health check reflects automatic fallback to Memory mode
-    const hc = await client.send('/healthCheck');
-    expect(hc.statusCode).toBe(200);
-    expect(hc.response.databaseMode).toBe('Memory');
-  });
-
   test('23. Offline temporary registration & online storeIdMismatch revalidation', async () => {
     test.skip(!IS_MOCK, 'Requires offline mode toggle');
     await setMockState({ offlineMode: true });
@@ -514,12 +431,6 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
       familyName: 'User',
       sponserId: 'rt00001',
     });
-
-  test('24. /register/tempEmployee rejects missing mandatory fields with 9510', async () => {
-    const res = await client.send('/register/tempEmployee', { employeeId: 'T_MISSING_01', firstName: 'No' });
-    expect(res.statusCode).toBe(400);
-    expect(res.response.errorInfo.code).toBe(9510);
-  });
 
   test('25. /register/tempEmployee rejects an already-existing employee with 1511', async () => {
     test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
@@ -569,12 +480,6 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(res.response.errorInfo.code).toBe(9510);
   });
 
-  test('29. /setConfiguration rejects an empty configuration payload', async () => {
-    const res = await client.send('/setConfiguration', { configurations: {} });
-    expect(res.statusCode).toBe(400);
-    expect(res.response.errorInfo.code).toBe(9500);
-  });
-
   test('30. Successful logins are written to SecurityLog with statusCode 200 (audit trail)', async () => {
     test.skip(!IS_MOCK, 'Requires mock state inspection');
     const res = await client.send('/authenticate/credentials', {
@@ -591,55 +496,9 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   });
 
   // =========================================================================
-  // 9. IN-FLIGHT TRANSACTIONS, TOKENS, TEMP PROFILES & SPONSOR LOGIN
+  // 9. TOKENS, TEMP PROFILES & SPONSOR LOGIN
+  //    (in-flight transactions: TRM-01 in spec-coverage)
   // =========================================================================
-  test('31. /terminate/transaction cancels an in-flight transaction and returns 200', async () => {
-    test.skip(!IS_MOCK, 'Requires a deterministic in-flight transaction');
-    const hungId = `e2e-hung-${Date.now()}`;
-    const pending = client.send(
-      '/authenticate/biometric',
-      { employeeId: 'rt00001', uiDelay: 0, simulateHangMs: 1500 },
-      hungId,
-      2500
-    );
-    const settled = pending.then(
-      (r) => ({ ok: true as const, r }),
-      (e) => ({ ok: false as const, e })
-    );
-
-    const term = await client.send('/terminate/transaction', { targetCorrelationID: hungId });
-    expect(term.statusCode).toBe(200);
-    expect(term.response.actionResult.code).toBe(900);
-
-    // The cancelled transaction must never produce a success frame
-    const outcome = await settled;
-    expect(outcome.ok).toBe(false);
-  });
-
-  test('32. A transaction that is not terminated completes normally after a delay', async () => {
-    test.skip(!IS_MOCK, 'Requires a deterministic in-flight transaction');
-    const res = await client.send(
-      '/authenticate/biometric',
-      { employeeId: 'rt00001', uiDelay: 0, simulateHangMs: 300 },
-      undefined,
-      3000
-    );
-    expect(res.statusCode).toBe(200);
-    expect(res.response.actionResult.code).toBe(102);
-  });
-
-  test('33. /authenticate/biometric with multiple faces in frame returns a 150 re-scan with 1501', async () => {
-    test.skip(!IS_MOCK, 'Requires vision fault injection');
-    const res = await client.send('/authenticate/biometric', {
-      employeeId: 'rt00001',
-      uiDelay: 0,
-      simulateMultipleFaces: true,
-    });
-    expect(res.statusCode).toBe(400);
-    expect(res.response.actionResult.code).toBe(150);
-    expect(res.response.errorInfo.code).toBe(1501);
-  });
-
   test('34. /user/token validates input (9510), unknown user (6500) and IDP outage (1510)', async () => {
     const missing = await client.send('/user/token', {});
     expect(missing.statusCode).toBe(400);

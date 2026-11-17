@@ -122,12 +122,16 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // LOGGING: SecurityLog / ErrorLog
   // ===========================================================================
-  test('[LOG-01] A failed /healthCheck is written to ErrorLog and not to SecurityLog', async () => {
+  test('[LOG-01] A failed /healthCheck returns 9502 and is written to ErrorLog, not SecurityLog', async () => {
     test.skip(!IS_MOCK, 'Requires mock state inspection and failure injection');
     const res = await client.send('/healthCheck', { simulateFailure: true });
     expect(res.statusCode).toBe(400);
+    expect(res.response.errorInfo.code).toBe(9502);
     const state = await inspectMockState();
-    expect(state.errorLogs.some((l: any) => l.correlationId === res.correlationID)).toBe(true);
+    const entry = state.errorLogs.find((l: any) => l.correlationId === res.correlationID);
+    expect(entry).toBeTruthy();
+    expect(entry.actionPerformed).toBe('/healthCheck');
+    expect(entry.errorCode).toBe('9502');
     expect(state.securityLogs.some((l: any) => l.correlationId === res.correlationID)).toBe(false);
   });
 
@@ -233,7 +237,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(frame.timeTaken).toMatch(/^\d+ms$/);
   });
 
-  test('[HSU-02] /healthStatusUpdate is pushed when the camera status changes', async () => {
+  test('[HSU-02] A /healthStatusUpdate reporting the camera OFF is received after the camera is turned off', async () => {
     test.skip(!IS_MOCK, 'Requires deterministic camera toggle');
     const frame = client.waitForFrame(
       (f) => f.path === '/healthStatusUpdate' && f.response.cameraStatus?.cameraEnabled === false,
@@ -243,7 +247,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect((await frame).response.cameraStatus.cameraEnabled).toBe(false);
   });
 
-  test('[HSU-03] /healthStatusUpdate is pushed when internet connectivity changes (and reports Memory mode when applicable)', async () => {
+  test('[HSU-03] A /healthStatusUpdate frame is received after internet connectivity changes', async () => {
     test.skip(!IS_MOCK, 'Requires connectivity fault injection');
     const frame = client.waitForFrame((f) => f.path === '/healthStatusUpdate', 4000);
     await setMockState({ offlineMode: true });
@@ -450,6 +454,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(noFace.response.errorInfo.code).toBe(1503);
 
     const multi = await client.send('/authenticate/biometric', { employeeId: 'rt00001', uiDelay: 0, simulateMultipleFaces: true });
+    expect(multi.statusCode).toBe(400);
     expect(multi.response.actionResult.code).toBe(150);
     expect(multi.response.errorInfo.code).toBe(1501);
 
@@ -517,7 +522,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.modelUsed).toBe('mbfv1');
   });
 
-  test('[BIO-08] Expired token while the IDP is down returns 153/1510 plus cached userInfo, without attempting a refresh', async () => {
+  test('[BIO-08] Expired token while the IDP is down returns 153/1510 plus cached userInfo', async () => {
     test.skip(!IS_MOCK, 'Requires IDP fault injection');
     await setMockState({ idpDown: true });
     const res = await client.send('/authenticate/biometric', { employeeId: 'expired_emp_01', uiDelay: 0 });
@@ -588,6 +593,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(fail.response.errorInfo.code).toBe(9524);
 
     const hc = await client.send('/healthCheck');
+    expect(hc.statusCode).toBe(200);
     expect(hc.response.databaseMode).toBe('Memory');
     const cred = await client.send('/authenticate/credentials', { employeeId: 'rt00001', password: 'SecretPassword123' });
     expect(cred.statusCode).toBe(200);
@@ -635,8 +641,12 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
 
   test('[TWN-04] 1:1 twin: secondary verification is valid only inside the interval and a successful biometric does not extend it', async () => {
     test.skip(!IS_MOCK, 'Requires twin interval configuration');
-    await setMockState({ periodicIntervalMinutes: 0.004 }); // ~240 ms
-    await client.send('/authenticate/credentials', { employeeId: 'twin_emp_01', password: 'TwinPassword123' });
+    await setMockState({ periodicIntervalMinutes: 0.01 }); // 600 ms window from the credential login
+    const cred = await client.send('/authenticate/credentials', { employeeId: 'twin_emp_01', password: 'TwinPassword123' });
+    expect(cred.statusCode).toBe(200);
+    // Biometric success late in the window (~350 ms). If it extended the window, the next
+    // call (~750 ms) would still be inside it (until ~950 ms) and return 200.
+    await sleep(350);
     const inside = await client.send('/authenticate/biometric', { employeeId: 'twin_emp_01', uiDelay: 0 });
     expect(inside.statusCode).toBe(200);
     await sleep(400);
@@ -765,11 +775,13 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // TEMPORARY EMPLOYEES: registration, offline use, revalidation
   // ===========================================================================
-  test('[TMP-01] /register/tempEmployee with an empty payload is rejected with 951/9510', async () => {
-    const res = await client.send('/register/tempEmployee', {});
-    expect(res.statusCode).toBe(400);
-    expect(res.response.actionResult.code).toBe(951);
-    expect(res.response.errorInfo.code).toBe(9510);
+  test('[TMP-01] /register/tempEmployee with an empty or incomplete payload is rejected with 951/9510', async () => {
+    for (const payload of [{}, { employeeId: 'T_MISSING_01', firstName: 'No' }]) {
+      const res = await client.send('/register/tempEmployee', payload);
+      expect(res.statusCode).toBe(400);
+      expect(res.response.actionResult.code).toBe(951);
+      expect(res.response.errorInfo.code).toBe(9510);
+    }
   });
 
   test('[TMP-02] Offline temp user can use a PIN barcode locally; once IdPs are back the local profile is not served (6522)', async () => {
@@ -806,8 +818,13 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     const first = await client.send('/authenticate/biometric', { employeeId: 'REVAL_SAME_STORE', uiDelay: 0 });
     expect(first.statusCode).toBe(200);
     expect(first.response.actionResult.code).toBe(102);
+    // Once replaced, the profile is no longer an offline one, so a revalidation failure
+    // condition must no longer apply to it.
+    await setMockState({ storeIdMismatchOnRevalidate: true });
     const second = await client.send('/authenticate/biometric', { employeeId: 'REVAL_SAME_STORE', uiDelay: 0 });
     expect(second.statusCode).toBe(200);
+    expect(second.response.actionResult.code).toBe(102);
+    expect(second.storeIdMismatch).toBeUndefined();
   });
 
   test('[TMP-04] Revalidation when IdPs return: profile found in another store returns 1509 with storeIdMismatch=true and is not cached', async () => {
@@ -848,7 +865,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
   // ===========================================================================
   // /terminate/transaction
   // ===========================================================================
-  test('[TRM-01] Terminating one in-flight transaction leaves other in-flight transactions untouched', async () => {
+  test('[TRM-01] Terminating one in-flight transaction cancels it silently and lets other in-flight transactions complete with 102', async () => {
     test.skip(!IS_MOCK, 'Requires deterministic in-flight transactions');
     const cancelled = `e2e-cancel-${Date.now()}`;
     const survivor = `e2e-survive-${Date.now()}`;
@@ -866,6 +883,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(term.response.actionResult.code).toBe(900);
     const result = await survivorP;
     expect(result.statusCode).toBe(200);
+    expect(result.response.actionResult.code).toBe(102);
     expect(await cancelledP).toBe('silent');
   });
 
@@ -909,7 +927,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.response.errorInfo.code).toBe(6500);
   });
 
-  test('[FGT-02] /forgetMe deleteFaceId is optional (defaults to false) and still removes the cached profile', async () => {
+  test('[FGT-02] /forgetMe without deleteFaceId succeeds and removes the cached profile', async () => {
     test.skip(!CAN_MUTATE, MUTATION_SKIP);
     const id = uniqueId('T_FGT');
     expect((await registerTemp(id)).statusCode).toBe(200);
@@ -978,11 +996,13 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(config.FallBackAuthEnabled).toBe('N');
   });
 
-  test('[CFG-03] /setConfiguration without a configurations object is rejected with 950/9500', async () => {
-    const res = await client.send('/setConfiguration', {});
-    expect(res.statusCode).toBe(400);
-    expect(res.response.actionResult.code).toBe(950);
-    expect(res.response.errorInfo.code).toBe(9500);
+  test('[CFG-03] /setConfiguration with a missing or empty configurations object is rejected with 950/9500', async () => {
+    for (const payload of [{}, { configurations: {} }]) {
+      const res = await client.send('/setConfiguration', payload);
+      expect(res.statusCode).toBe(400);
+      expect(res.response.actionResult.code).toBe(950);
+      expect(res.response.errorInfo.code).toBe(9500);
+    }
   });
 
   // ===========================================================================
@@ -1024,13 +1044,16 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
 
   test('[CAM-02] With DisableCamera or SilentModeEnabled set, an ON request succeeds but the camera stays OFF', async () => {
     test.skip(!IS_MOCK, 'Requires configuration toggling');
-    await setMockState({ config: { DisableCamera: true } });
-    await client.send('/notify/bio-camera', { clientId: 'pos-01', action: 'OFF' });
-    const on = await client.send('/notify/bio-camera', { clientId: 'pos-01', action: 'ON' });
-    expect(on.statusCode).toBe(200);
-    expect(on.response.actionResult.code).toBe(706);
-    const hc = await client.send('/healthCheck');
-    expect(hc.response.cameraStatus.cameraEnabled).toBe(false);
+    for (const flag of ['DisableCamera', 'SilentModeEnabled']) {
+      await resetMockState();
+      await setMockState({ config: { [flag]: true } });
+      await client.send('/notify/bio-camera', { clientId: 'pos-01', action: 'OFF' });
+      const on = await client.send('/notify/bio-camera', { clientId: 'pos-01', action: 'ON' });
+      expect(on.statusCode, flag).toBe(200);
+      expect(on.response.actionResult.code, flag).toBe(706);
+      const hc = await client.send('/healthCheck');
+      expect(hc.response.cameraStatus.cameraEnabled, flag).toBe(false);
+    }
   });
 
   test('[CAM-03] A scan with the camera OFF while a VV camera is open returns 952/9520 "Agent - Camera unavailable"', async () => {

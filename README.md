@@ -12,17 +12,17 @@ The suite runs in two modes, and the coverage differs between them.
 
 | Mode | Command | Tests that run |
 |---|---|---|
-| Mock (default) | `npm test` | 135 of 135 |
-| Live, read-only | `USE_MOCK_AGENT=false npm test` | 29 (the other 106 are skipped) |
-| Live, with data-changing tests | `USE_MOCK_AGENT=false ALLOW_LIVE_MUTATIONS=true npm test` | 46 (the other 89 are skipped) |
+| Mock (default) | `npm test` | 126 of 126 |
+| Live, read-only | `USE_MOCK_AGENT=false npm test` | 26 (the other 100 are skipped) |
+| Live, with data-changing tests | `USE_MOCK_AGENT=false ALLOW_LIVE_MUTATIONS=true npm test` | 43 (the other 83 are skipped) |
 
-**Mock mode** runs the tests against `mock-server/server.ts`, a stand-in for the agent. It checks that the suite's reading of the specification is consistent and that the test client works. A passing mock run does **not** show that the real agent behaves this way. 106 tests rely on mock-only controls (simulated failures and state inspection) and cannot run against a real agent.
+**Mock mode** runs the tests against `mock-server/server.ts`, a stand-in for the agent. It checks that the suite's reading of the specification is consistent and that the test client works. A passing mock run does **not** show that the real agent behaves this way. 100 tests rely on mock-only controls (simulated failures and state inspection) and cannot run against a real agent.
 
 **Live mode** is the evidence about the actual agent, and today it covers a subset of the specification. Treat the live counts above as the true measure of agent coverage.
 
 The requirement-by-requirement mapping is in [`docs/REQUIREMENTS_TRACEABILITY.md`](docs/REQUIREMENTS_TRACEABILITY.md). Each automated requirement there is marked **mock-only** or **mock + live**.
 
-## What's Covered (135 automated tests against the mock agent)
+## What's Covered (126 automated tests against the mock agent)
 Every area below is exercised against the mock agent. Most of it is **mock-only**; see [What this suite covers: mock vs. live](#what-this-suite-covers-mock-vs-live) for what also runs against a real agent.
 
 - **Protocol & Audit Logging**: JSON envelope (`correlationID`, `path`, `statusCode`, `timeTaken`, `processingMs`), `/healthCheck` exclusion from `SecurityLog`, and failure routing to `ErrorLog`.
@@ -68,7 +68,7 @@ Run a single area with `npm test -- -g "BAR-"`. Items an API test cannot prove (
 ```
 mock-server/server.ts                 Spec-compliant mock agent + HTTP control plane (/__test/*)
 tests/ws-client.ts                    WebSocket client and helpers (waitForFrame, uniqueId, control)
-tests/security-agent.e2e.spec.ts      Core end-to-end scenarios (T01-T37)
+tests/security-agent.e2e.spec.ts      Core end-to-end scenarios (T01-T37, with gaps for retired IDs)
 tests/spec-coverage.e2e.spec.ts       Requirement-tagged specification tests
 docs/REQUIREMENTS_TRACEABILITY.md     Requirement -> test matrix, manual cases, open questions
 playwright.config.ts                  Config (starts the mock agent automatically)
@@ -93,13 +93,13 @@ GitHub Actions (`.github/workflows/e2e.yml`) installs with `npm ci`, type-checks
 npm install
 npm test
 ```
-Playwright automatically boots the local WebSocket mock agent on `ws://127.0.0.1:8080`, executes all 135 tests, and shuts it down.
+Playwright automatically boots the local WebSocket mock agent on `ws://127.0.0.1:8080`, executes all 126 tests, and shuts it down.
 
 ### 2. Run Against a Live StoreOS Ubuntu 22 Security Agent
 ```bash
 USE_MOCK_AGENT=false AGENT_WS_URL=ws://<storeos-terminal-ip>:8080 npm test
 ```
-*(Tests marked `test.skip(!IS_MOCK, ...)` need the mock control plane and are skipped automatically. A read-only live run executes 29 of the 135 tests; see [What this suite covers: mock vs. live](#what-this-suite-covers-mock-vs-live).)*
+*(Tests marked `test.skip(!IS_MOCK, ...)` need the mock control plane and are skipped automatically. A read-only live run executes 26 of the 126 tests; see [What this suite covers: mock vs. live](#what-this-suite-covers-mock-vs-live).)*
 
 **Live runs are read-safe by default.** Tests that create, change or delete data on the agent (temp registration, barcode creation, `/setConfiguration`, `/forgetMe`) are skipped against a live agent. Only set `ALLOW_LIVE_MUTATIONS=true` on a disposable test terminal:
 ```bash
