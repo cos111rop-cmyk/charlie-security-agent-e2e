@@ -45,6 +45,23 @@ interface BarcodeRecord {
   createdAt: number;
 }
 
+/** Pristine agent configuration. Frozen so no test can change it; reset copies from it. */
+const DEFAULT_CONFIG: Readonly<Record<string, any>> = Object.freeze({
+  BiometricRegistrationFacialScanMaxAttempts: 5,
+  AuthenticationFacialScanTimeout: 30,
+  AuthenticationFacialScanMaxAttempts: 5,
+  FallBackAuthEnabled: 'Y',
+  FallBackAuthWithPinEnabled: 'Y',
+  BarcodeExpiryTime: 300,
+  BarcodeScanMaxAttempts: 5,
+  DisableUserSync: false,
+  SilentModeEnabled: false,
+  DisableCamera: false,
+  store_id: '68628',
+  workstation_id: 'WS001',
+  backend_url: 'https://api-develv3.cvsauth.com',
+});
+
 const state = {
   databaseMode: 'DB' as 'DB' | 'Memory',
   cameraEnabled: true,
@@ -56,21 +73,7 @@ const state = {
   profileMissingOnRevalidate: false,
   vvCameraOpen: false,
   periodicIntervalMinutes: 60,
-  config: {
-    BiometricRegistrationFacialScanMaxAttempts: 5,
-    AuthenticationFacialScanTimeout: 30,
-    AuthenticationFacialScanMaxAttempts: 5,
-    FallBackAuthEnabled: 'Y',
-    FallBackAuthWithPinEnabled: 'Y',
-    BarcodeExpiryTime: 300,
-    BarcodeScanMaxAttempts: 5,
-    DisableUserSync: false,
-    SilentModeEnabled: false,
-    DisableCamera: false,
-    store_id: '68628',
-    workstation_id: 'WS001',
-    backend_url: 'https://api-develv3.cvsauth.com',
-  } as Record<string, any>,
+  config: { ...DEFAULT_CONFIG } as Record<string, any>,
   users: new Map<string, UserRecord>(),
   barcodes: new Map<string, BarcodeRecord>(),
   securityLogs: [] as any[],
@@ -95,9 +98,8 @@ function seedInitialData() {
   state.profileMissingOnRevalidate = false;
   state.vvCameraOpen = false;
   state.periodicIntervalMinutes = 60;
-  state.config.FallBackAuthWithPinEnabled = 'Y';
-  state.config.DisableCamera = false;
-  state.config.SilentModeEnabled = false;
+  // Restore every config key, including ones changed via /setConfiguration or /__test/state.
+  state.config = { ...DEFAULT_CONFIG };
 
   const now = Date.now();
   // Regular employee
@@ -351,9 +353,12 @@ const server = http.createServer((req, res) => {
       const connectivityChanged =
         ('offlineMode' in patch && patch.offlineMode !== state.offlineMode) ||
         ('idpDown' in patch && patch.idpDown !== state.idpDown);
-      Object.assign(state, patch);
+      // Merge `config` key-by-key; a plain Object.assign(state, patch) would replace the
+      // whole config object and drop store_id, workstation_id, backend_url, etc.
+      const { config: configPatch, ...topLevelPatch } = patch;
+      Object.assign(state, topLevelPatch);
       if (connectivityChanged) broadcastHealthStatusUpdate();
-      if (patch.config) Object.assign(state.config, patch.config);
+      if (configPatch && typeof configPatch === 'object') Object.assign(state.config, configPatch);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, state: {
         databaseMode: state.databaseMode,
