@@ -36,6 +36,11 @@ async function control(path: string, init?: RequestInit): Promise<any> {
   return res.json().catch(() => null);
 }
 
+/** Unique, short employee IDs so tests that register data can be re-run against a persistent agent. */
+export function uniqueId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+}
+
 export class AgentWsClient {
   private ws!: WebSocket;
 
@@ -112,6 +117,49 @@ export class AgentWsClient {
 
       this.ws.on('message', listener);
       this.ws.send(JSON.stringify({ correlationID, path, payload }));
+    });
+  }
+
+  /**
+   * Resolves with the first unsolicited/any frame matching `predicate`.
+   * Register it BEFORE triggering the action that should produce the frame.
+   */
+  waitForFrame(predicate: (f: AgentEnvelope) => boolean, timeoutMs = 3000): Promise<AgentEnvelope> {
+    return new Promise<AgentEnvelope>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.ws.off('message', listener);
+        reject(new Error('Timeout waiting for matching frame'));
+      }, timeoutMs);
+      const listener = (raw: WebSocket.RawData) => {
+        const parsed = parseFrame(raw);
+        if (parsed && predicate(parsed)) {
+          clearTimeout(timer);
+          this.ws.off('message', listener);
+          resolve(parsed);
+        }
+      };
+      this.ws.on('message', listener);
+    });
+  }
+
+  /** Sends a raw (possibly malformed) text frame and resolves with the first frame returned. */
+  sendRaw(text: string, timeoutMs = 3000): Promise<AgentEnvelope> {
+    return new Promise<AgentEnvelope>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.ws.off('message', listener);
+        reject(new Error('Timeout waiting for reply to raw frame'));
+      }, timeoutMs);
+      const listener = (raw: WebSocket.RawData) => {
+        const parsed = parseFrame(raw);
+        // ignore interval heartbeats
+        if (parsed && parsed.path !== '/healthStatusUpdate') {
+          clearTimeout(timer);
+          this.ws.off('message', listener);
+          resolve(parsed);
+        }
+      };
+      this.ws.on('message', listener);
+      this.ws.send(text);
     });
   }
 

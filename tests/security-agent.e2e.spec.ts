@@ -6,6 +6,7 @@ import {
   inspectMockState,
   IS_MOCK,
   CAN_MUTATE,
+  uniqueId,
 } from './ws-client';
 
 test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
@@ -99,7 +100,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   // =========================================================================
   test('06. /register/tempEmployee creates temporary profile and allows biometric enrollment with its registration correlationID', async () => {
     test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
-    const tempId = 'T005900099';
+    const tempId = uniqueId('T0059');
     const reg = await client.send('/register/tempEmployee', {
       employeeId: tempId,
       consentGiven: true,
@@ -325,7 +326,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(res.response.userTokens[1].type).toBe('SM');
   });
 
-  test('16. /notify/bio-camera toggles camera ON/OFF and blocks biometric scan with 9520 when OFF', async () => {
+  test('16. /notify/bio-camera toggles the camera; a scan with the camera OFF turns it back on when no VV camera is open', async () => {
     test.skip(!IS_MOCK, 'Requires hardware toggle verification');
     const offRes = await client.send('/notify/bio-camera', {
       clientId: 'pos-01',
@@ -333,13 +334,17 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     });
     expect(offRes.statusCode).toBe(200);
     expect(offRes.response.actionResult.code).toBe(706);
+    const hcOff = await client.send('/healthCheck');
+    expect(hcOff.response.cameraStatus.cameraEnabled).toBe(false);
 
+    // Spec: camera OFF + VV cameras closed -> agent turns the camera ON and proceeds with the scan
     const scanWhileOff = await client.send('/authenticate/biometric', {
       employeeId: 'rt00001',
       uiDelay: 0,
     });
-    expect(scanWhileOff.statusCode).toBe(400);
-    expect(scanWhileOff.response.errorInfo.code).toBe(9520);
+    expect(scanWhileOff.statusCode).toBe(200);
+    const hcAfter = await client.send('/healthCheck');
+    expect(hcAfter.response.cameraStatus.cameraEnabled).toBe(true);
 
     const onRes = await client.send('/notify/bio-camera', {
       clientId: 'pos-01',
@@ -349,7 +354,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   });
 
   test('17. /setConfiguration updates flags and triggers internal self-restart on critical keys', async () => {
-    test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
+    test.skip(!IS_MOCK, 'Changes agent configuration (incl. backend_url); verify manually on a disposable terminal');
     const res = await client.send('/setConfiguration', {
       configurations: {
         FallBackAuthWithPinEnabled: 'N',
@@ -383,16 +388,24 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(okUpload.response.actionResult.code).toBe(900);
   });
 
-  test('20. /forgetMe wipes user profile from cache and subsequent lookups return 6500', async () => {
+  test('20. /forgetMe wipes a user profile from cache and subsequent lookups return 6500', async () => {
     test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
-    const del = await client.send('/forgetMe', {
-      employeeId: 'rt00001',
-      deleteFaceId: 'true',
+    // Uses a throwaway temp employee so no real profile is ever deleted
+    const id = uniqueId('T_FORGET');
+    const reg = await client.send('/register/tempEmployee', {
+      employeeId: id,
+      consentGiven: true,
+      firstName: 'Forget',
+      familyName: 'Me',
+      sponserId: 'rt00001',
     });
+    expect(reg.statusCode).toBe(200);
+
+    const del = await client.send('/forgetMe', { employeeId: id, deleteFaceId: 'true' });
     expect(del.statusCode).toBe(200);
     expect(del.response.actionResult.code).toBe(900);
 
-    const after = await client.send('/userinfo', { employeeId: 'rt00001' });
+    const after = await client.send('/userinfo', { employeeId: id });
     expect(after.statusCode).toBe(400);
     expect(after.response.errorInfo.code).toBe(6500);
   });
@@ -510,9 +523,10 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
 
   test('25. /register/tempEmployee rejects an already-existing employee with 1511', async () => {
     test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
-    const first = await registerTemp('T_DUP_01');
+    const dupId = uniqueId('T_DUP');
+    const first = await registerTemp(dupId);
     expect(first.statusCode).toBe(200);
-    const second = await registerTemp('T_DUP_01');
+    const second = await registerTemp(dupId);
     expect(second.statusCode).toBe(400);
     expect(second.response.errorInfo.code).toBe(1511);
   });
@@ -614,7 +628,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(res.response.actionResult.code).toBe(102);
   });
 
-  test('33. /authenticate/biometric with multiple faces requires secondary verification (1512)', async () => {
+  test('33. /authenticate/biometric with multiple faces in frame returns a 150 re-scan with 1501', async () => {
     test.skip(!IS_MOCK, 'Requires vision fault injection');
     const res = await client.send('/authenticate/biometric', {
       employeeId: 'rt00001',
@@ -622,7 +636,8 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
       simulateMultipleFaces: true,
     });
     expect(res.statusCode).toBe(400);
-    expect(res.response.errorInfo.code).toBe(1512);
+    expect(res.response.actionResult.code).toBe(150);
+    expect(res.response.errorInfo.code).toBe(1501);
   });
 
   test('34. /user/token validates input (9510), unknown user (6500) and IDP outage (1510)', async () => {
@@ -643,8 +658,9 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
 
   test('35. Temp employee with a valid profile authenticates biometrically after enrollment', async () => {
     test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
+    const validId = uniqueId('T_VALID');
     const reg = await client.send('/register/tempEmployee', {
-      employeeId: 'T_VALID_01',
+      employeeId: validId,
       consentGiven: true,
       firstName: 'Valid',
       familyName: 'Profile',
@@ -653,11 +669,11 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     });
     expect(reg.statusCode).toBe(200);
     const enroll = await client.send('/register/biometric', {
-      employeeId: 'T_VALID_01',
+      employeeId: validId,
       loginCorrelationID: reg.correlationID,
     });
     expect(enroll.statusCode).toBe(200);
-    const auth = await client.send('/authenticate/biometric', { employeeId: 'T_VALID_01', uiDelay: 0 });
+    const auth = await client.send('/authenticate/biometric', { employeeId: validId, uiDelay: 0 });
     expect(auth.statusCode).toBe(200);
     expect(auth.response.actionResult.code).toBe(102);
   });

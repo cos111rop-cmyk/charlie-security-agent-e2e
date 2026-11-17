@@ -2,7 +2,11 @@
 
 Portable, self-contained TypeScript + Playwright WebSocket E2E test suite covering every endpoint, error code, UI guidance translation, and resilience scenario in the **Charlie StoreOS Security Agent** specification.
 
-## What's Covered (37 E2E Scenarios)
+## Documentation and traceability
+* [`docs/REQUIREMENTS_TRACEABILITY.md`](docs/REQUIREMENTS_TRACEABILITY.md) maps every requirement in the four source documents to an automated test (`T01`-`T37`, or a tagged ID such as `[BAR-05]`) or to a written manual test case, and lists the places where the source documents disagree.
+* `tests/security-agent.e2e.spec.ts` holds the core end-to-end scenarios; `tests/spec-coverage.e2e.spec.ts` holds the requirement-tagged specification tests.
+
+## What's Covered (135 automated tests)
 - **Protocol & Audit Logging**: JSON envelope (`correlationID`, `path`, `statusCode`, `timeTaken`, `processingMs`), `/healthCheck` exclusion from `SecurityLog`, and failure routing to `ErrorLog`.
 - **All 15 WebSocket Endpoints**:
   - `/healthCheck` & `/healthStatusUpdate`
@@ -31,7 +35,7 @@ Portable, self-contained TypeScript + Playwright WebSocket E2E test suite coveri
 npm install
 npm test
 ```
-Playwright automatically boots the local WebSocket mock agent on `ws://127.0.0.1:8080`, executes all 37 tests, and shuts it down.
+Playwright automatically boots the local WebSocket mock agent on `ws://127.0.0.1:8080`, executes all 135 tests, and shuts it down.
 
 ### 2. Run Against a Live StoreOS Ubuntu 22 Security Agent
 ```bash

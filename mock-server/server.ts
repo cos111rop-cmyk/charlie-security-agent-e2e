@@ -53,6 +53,8 @@ const state = {
   allServicesDown: false,
   offlineMode: false,
   storeIdMismatchOnRevalidate: false,
+  profileMissingOnRevalidate: false,
+  vvCameraOpen: false,
   periodicIntervalMinutes: 60,
   config: {
     BiometricRegistrationFacialScanMaxAttempts: 5,
@@ -83,12 +85,15 @@ function seedInitialData() {
   state.securityLogs = [];
   state.errorLogs = [];
   state.databaseMode = 'DB';
+  state.restartCount = 0;
   state.cameraEnabled = true;
   state.uiEnabled = true;
   state.idpDown = false;
   state.allServicesDown = false;
   state.offlineMode = false;
   state.storeIdMismatchOnRevalidate = false;
+  state.profileMissingOnRevalidate = false;
+  state.vvCameraOpen = false;
   state.periodicIntervalMinutes = 60;
   state.config.FallBackAuthWithPinEnabled = 'Y';
   state.config.DisableCamera = false;
@@ -165,6 +170,42 @@ function seedInitialData() {
     lastRefresh: now - 7200_000,
   });
 
+  // Employee with no tokens at all (both IDPs unavailable when last synced)
+  state.users.set('notoken_emp_01', {
+    employeeId: 'notoken_emp_01',
+    password: 'NoTokenPassword123',
+    firstName: 'Sam',
+    lastName: 'Notoken',
+    isBiometricRegistered: true,
+    uuid: 'notoken-uuid-0001',
+    digital_twin_status: 'clear',
+    digital_twin_pairs: [],
+    last_twin_check_at: null,
+    firstLogin: now - 10000,
+    lastRefresh: now - 5000,
+  });
+
+  // Employee with only a PING session (no SiteMinder token) for partial /user/token responses
+  state.users.set('ping_only_emp_01', {
+    employeeId: 'ping_only_emp_01',
+    password: 'PingOnlyPassword123',
+    firstName: 'Pat',
+    lastName: 'Pingonly',
+    isBiometricRegistered: true,
+    uuid: 'pingonly-uuid-0001',
+    digital_twin_status: 'clear',
+    digital_twin_pairs: [],
+    last_twin_check_at: null,
+    pingSession: {
+      id_token: 'po.id.token',
+      access_token: 'po.access.token',
+      refresh_token: 'po.refresh.token',
+      expires_at: now + 3600_000,
+    },
+    firstLogin: now - 10000,
+    lastRefresh: now - 5000,
+  });
+
   // Temporary employee that can log in with credentials (exercises sponsorId in userInfo)
   state.users.set('temp_emp_01', {
     employeeId: 'temp_emp_01',
@@ -195,6 +236,36 @@ function seedInitialData() {
 
 seedInitialData();
 
+function healthPayload() {
+  return {
+    actionResult: { code: 900, message: 'Operation Success' },
+    serviceStatus: { status: 0, uptime: Math.floor(process.uptime()) },
+    cameraStatus: { hardwareStatus: state.cameraEnabled ? 0 : -1, cameraEnabled: state.cameraEnabled },
+    databaseConnection: 0,
+    databaseMode: state.databaseMode,
+    uiStatus: state.uiEnabled ? 0 : -1,
+  };
+}
+
+const clients = new Set<WebSocket>();
+const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS || 60_000);
+
+function sendHealthStatusUpdate(ws: WebSocket) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    statusCode: 200,
+    correlationID: '',
+    path: '/healthStatusUpdate',
+    response: healthPayload(),
+    timeTaken: '1ms',
+    processingMs: 1,
+  }));
+}
+
+function broadcastHealthStatusUpdate() {
+  clients.forEach(sendHealthStatusUpdate);
+}
+
 function envelope(
   statusCode: number,
   correlationID: string,
@@ -222,16 +293,21 @@ function logAudit(
   employeeId = '',
   errorCode = '',
   errorMessage = '',
-  timeTakenMs = 10
+  timeTakenMs = 10,
+  actionCode: number | string = ''
 ) {
   if (path === '/healthCheck' && statusCode === 200) {
     // Spec: Successful healthCheck calls are excluded from SecurityLog
     return;
   }
-  if (statusCode === 200) {
+  const actionResult = `statusCode:${statusCode}//actionCode:${actionCode}`;
+  // Spec: all API calls are logged in SecurityLog except successful /healthCheck;
+  // a failed /healthCheck goes to ErrorLog instead of SecurityLog.
+  if (!(path === '/healthCheck' && statusCode !== 200)) {
     state.securityLogs.push({
       correlationId: correlationID,
       actionPerformed: path,
+      actionResult,
       statusCode,
       appId: 'StoreOS',
       employeeId,
@@ -241,7 +317,8 @@ function logAudit(
       timeTakenMs,
       synced: !state.offlineMode,
     });
-  } else {
+  }
+  if (statusCode !== 200) {
     state.errorLogs.push({
       correlationId: correlationID,
       actionPerformed: path,
@@ -271,7 +348,11 @@ const server = http.createServer((req, res) => {
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
       const patch = JSON.parse(body || '{}');
+      const connectivityChanged =
+        ('offlineMode' in patch && patch.offlineMode !== state.offlineMode) ||
+        ('idpDown' in patch && patch.idpDown !== state.idpDown);
       Object.assign(state, patch);
+      if (connectivityChanged) broadcastHealthStatusUpdate();
       if (patch.config) Object.assign(state.config, patch.config);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, state: {
@@ -309,6 +390,12 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws: WebSocket) => {
+  clients.add(ws);
+  const heartbeat = setInterval(() => sendHealthStatusUpdate(ws), HEARTBEAT_MS);
+  ws.on('close', () => {
+    clearInterval(heartbeat);
+    clients.delete(ws);
+  });
   ws.on('message', async (raw) => {
     const startMs = Date.now();
     let msg: any;
@@ -342,7 +429,8 @@ wss.on('connection', (ws: WebSocket) => {
         employeeId,
         response.errorInfo?.code || '',
         response.errorInfo?.message || '',
-        out.processingMs
+        out.processingMs,
+        response.actionResult?.code ?? ''
       );
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(out));
@@ -358,14 +446,7 @@ wss.on('connection', (ws: WebSocket) => {
             errorInfo: { code: 9502, message: 'API Timeout' },
           });
         }
-        return reply(200, {
-          actionResult: { code: 900, message: 'Operation Success' },
-          serviceStatus: { status: 0, uptime: Math.floor(process.uptime()) },
-          cameraStatus: { hardwareStatus: state.cameraEnabled ? 0 : -1, cameraEnabled: state.cameraEnabled },
-          databaseConnection: 0,
-          databaseMode: state.databaseMode,
-          uiStatus: state.uiEnabled ? 0 : -1,
-        }, '', {
+        return reply(200, healthPayload(), '', {
           idpStatus: state.idpDown
             ? { status: 'DOWN', allServicesDown: true, statusCode: 1515 }
             : 'UP',
@@ -473,6 +554,12 @@ wss.on('connection', (ws: WebSocket) => {
             errorInfo: { code: 6501, message: 'Credentials not valid' },
           }, employeeId);
         }
+        if (payload.simulateUiClose) {
+          return reply(400, {
+            actionResult: { code: 950, message: 'Generic Error' },
+            errorInfo: { code: 9509, message: 'Back UI navigation' },
+          }, employeeId);
+        }
         if (payload.simulateVisionError) {
           return reply(400, {
             actionResult: { code: 152, message: 'Failed Face Enrollment' },
@@ -514,6 +601,14 @@ wss.on('connection', (ws: WebSocket) => {
           }, employeeId || '');
         }
 
+        if (payload.simulateUiClose) {
+          // Spec: closing the UI (X icon) returns 9509 "Back UI navigation"
+          return reply(400, {
+            actionResult: { code: 950, message: 'Generic Error' },
+            errorInfo: { code: 9509, message: 'Back UI navigation' },
+          }, employeeId || '');
+        }
+
         if (payload.simulateHangMs) {
           // Keeps the transaction in flight so /terminate/transaction can cancel it.
           // A cancelled transaction is dropped without a response.
@@ -531,11 +626,16 @@ wss.on('connection', (ws: WebSocket) => {
           return;
         }
 
-        if (!state.cameraEnabled && !state.config.DisableCamera) {
-          return reply(400, {
-            actionResult: { code: 952, message: 'Hardware Error' },
-            errorInfo: { code: 9520, message: 'Agent - Camera unavailable' },
-          }, employeeId || '');
+        if (!state.cameraEnabled) {
+          if (state.vvCameraOpen) {
+            return reply(400, {
+              actionResult: { code: 952, message: 'Hardware Error' },
+              errorInfo: { code: 9520, message: 'Agent - Camera unavailable' },
+            }, employeeId || '');
+          }
+          // Spec: camera OFF and VV cameras closed -> turn the camera ON and proceed;
+          // leave it ON afterwards unless DisableCamera / SilentModeEnabled is set.
+          state.cameraEnabled = !(state.config.DisableCamera || state.config.SilentModeEnabled);
         }
 
         if (!state.uiEnabled && uiDelay === 0) {
@@ -561,7 +661,22 @@ wss.on('connection', (ws: WebSocket) => {
           }, employeeId || '');
         }
 
+        if (payload.simulateNoFace) {
+          return reply(400, {
+            actionResult: { code: 150, message: 'Face Re-scan' },
+            errorInfo: { code: 1503, message: 'Invalid image / No face found' },
+          }, employeeId || '');
+        }
+
         if (simulateMultipleFaces) {
+          return reply(400, {
+            actionResult: { code: 150, message: 'Face Re-scan' },
+            errorInfo: { code: 1501, message: 'Multiple face detected' },
+          }, employeeId || '');
+        }
+
+        if (payload.simulateAmbiguousMatch) {
+          // 1:N search returned more than one candidate -> secondary verification
           return reply(400, {
             actionResult: { code: 153, message: 'Failed Face Authentication' },
             errorInfo: { code: 1512, message: 'Secondary verification required' },
@@ -572,9 +687,23 @@ wss.on('connection', (ws: WebSocket) => {
           const visionMap: Record<string, string> = {
             'Too close': 'Move back',
             'Too far': 'Move closer',
+            'Close to right edge': 'Center your head in the frame',
+            'Close to left edge': 'Center your head in the frame',
+            'Close to top edge': 'Center your head in the frame',
+            'Close to bottom edge': 'Center your head in the frame',
+            'Too blurry': 'Hold Still',
             'Eyeglasses detected': 'Remove glasses',
             'Facemask detected': 'Remove mask',
-            'Too blurry': 'Hold Still',
+            'Chin too far left': 'Look at the camera',
+            'Chin too far right': 'Look at the camera',
+            'Chin too far up / Point camera at face': 'Look at the camera',
+            'Chin too far down / Point camera at face': 'Look at the camera',
+            'Image too dim': 'Too dim - increase lighting',
+            'Image too bright': 'Too bright - lower lighting',
+            'Face low confidence value': 'Center your head in the frame',
+            'Eyes closed': 'Hold still',
+            'Mouth open': 'Close mouth',
+            'Face tilted right': 'Straighten head',
             'Face tilted left': 'Straighten head',
           };
           return reply(400, {
@@ -630,6 +759,12 @@ wss.on('connection', (ws: WebSocket) => {
 
         // Temp registration online revalidation check
         if (user.tempRegistration && !state.offlineMode && !state.idpDown) {
+          if (state.profileMissingOnRevalidate) {
+            return reply(400, {
+              actionResult: { code: 153, message: 'Failed Face Authentication' },
+              errorInfo: { code: 1506, message: 'User not found' },
+            }, targetId);
+          }
           if (state.storeIdMismatchOnRevalidate) {
             return reply(200, {
               actionResult: { code: 153, message: 'Failed Face Authentication' },
@@ -710,6 +845,12 @@ wss.on('connection', (ws: WebSocket) => {
         }
         const user = state.users.get(employeeId);
         if (!user) {
+          return reply(400, {
+            actionResult: { code: 652, message: 'Barcode creation failed' },
+            errorInfo: { code: 6500, message: 'Credentials do not exist' },
+          }, employeeId);
+        }
+        if (user.isTempEmployee && user.profileExpiryTimestamp && Date.now() > user.profileExpiryTimestamp) {
           return reply(400, {
             actionResult: { code: 652, message: 'Barcode creation failed' },
             errorInfo: { code: 6500, message: 'Credentials do not exist' },
@@ -797,6 +938,17 @@ wss.on('connection', (ws: WebSocket) => {
         }
 
         const user = state.users.get(record.employeeId)!;
+        // Spec: once IdPs are back, temp-registered profiles are not served from the local cache,
+        // and expired temp profiles are rejected.
+        if (
+          (user.tempRegistration && !state.offlineMode && !state.idpDown) ||
+          (user.isTempEmployee && user.profileExpiryTimestamp && Date.now() > user.profileExpiryTimestamp)
+        ) {
+          return reply(400, {
+            actionResult: { code: 653, message: 'Barcode Authentication Failed' },
+            errorInfo: { code: 6522, message: 'Barcode data does not exist' },
+          }, record.employeeId);
+        }
         user.last_authenticated_at = new Date().toISOString();
         if (isLogin) {
           user.credentialType = 'barcode';
@@ -904,6 +1056,12 @@ wss.on('connection', (ws: WebSocket) => {
             actionResult: { code: 651, message: 'Credential failed' },
             errorInfo: { code: 6500, message: 'Credentials does not exist' },
           }, employeeId || '');
+        }
+        if (payload.simulateDeleteFailure) {
+          return reply(400, {
+            actionResult: { code: 950, message: 'Generic Error' },
+            errorInfo: { code: 9506, message: 'API Error' },
+          }, employeeId);
         }
         state.users.delete(employeeId);
         return reply(200, {
@@ -1015,14 +1173,18 @@ wss.on('connection', (ws: WebSocket) => {
             errorInfo: { code: 9510, message: 'A mandatory field is missing' },
           });
         }
+        const cameraBefore = state.cameraEnabled;
         if (action === 'OFF') {
           state.cameraEnabled = false;
         } else if (!state.config.DisableCamera && !state.config.SilentModeEnabled) {
           state.cameraEnabled = true;
         }
-        return reply(200, {
+        reply(200, {
           actionResult: { code: 706, message: 'Camera Action success' },
         });
+        // Event-driven update on camera status change (separate from the interval heartbeat)
+        if (cameraBefore !== state.cameraEnabled) broadcastHealthStatusUpdate();
+        return;
       }
 
       default:
