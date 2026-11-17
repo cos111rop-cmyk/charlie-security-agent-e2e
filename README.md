@@ -68,11 +68,6 @@ playwright.config.ts                  Config (starts the mock agent automaticall
 ## Continuous Integration
 GitHub Actions (`.github/workflows/e2e.yml`) installs with `npm ci`, type-checks with `tsc --noEmit`, runs the suite against the mock agent, and uploads `playwright-report/` and `test-results/` as artifacts. It uses read-only permissions and a 10-minute timeout.
 
-## Known Limitations
-* The mock agent is built from the specification documents, so a mock-mode pass shows the suite and documents agree, not that a real agent behaves as documented. Run against a real StoreOS terminal and execute the manual cases before sign-off.
-* Where the source documents contradict each other, the tests follow the full specification; each case is listed in section 5 of the traceability document.
-* `/register/tempEmployee` is marked "under review" in the specification and the Android permissions section is unfinished; these are only partly testable.
-
 ## Quick Start (Anyone Can Run Out of the Box)
 
 ### 1. Run Against the Built-in Spec-Compliant Mock Agent (Zero External Dependencies)
