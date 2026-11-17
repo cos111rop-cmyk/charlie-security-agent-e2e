@@ -277,6 +277,15 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     }
   });
 
+  test('[LOG-07] A successful /healthCheck is not written to SecurityLog', async () => {
+    test.skip(!IS_MOCK, 'Requires mock state inspection');
+    const res = await client.send('/healthCheck');
+    expect(res.statusCode).toBe(200);
+    const state = await inspectMockState();
+    expect(state.securityLogs.some((l: any) => l.correlationId === res.correlationID)).toBe(false);
+    expect(state.securityLogs.some((l: any) => l.actionPerformed === '/healthCheck')).toBe(false);
+  });
+
   // ===========================================================================
   // HEALTH: /healthCheck and /healthStatusUpdate
   // ===========================================================================
@@ -982,7 +991,7 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     }
   });
 
-  test('[USR-02] /userinfo returns the stored credentialType and credentialRefId and only assigns store/workstation when asked', async () => {
+  test('[USR-02] /userinfo returns the stored credentialType and credentialRefId, and assigns store/workstation when assignStore=true', async () => {
     test.skip(!CAN_MUTATE, MUTATION_SKIP);
     const login = await client.send('/authenticate/credentials', {
       employeeId: 'rt00001',
@@ -992,11 +1001,19 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     const plain = await client.send('/userinfo', { employeeId: 'rt00001' });
     expect(plain.response.credentialType).toBe('credentials');
     expect(plain.response.credentialRefId).toBe(login.correlationID);
-    if (IS_MOCK) expect(plain.response.userInfo.store_id).toBeUndefined();
 
     const assigned = await client.send('/userinfo', { employeeId: 'rt00001', assignStore: true });
     expect(assigned.response.userInfo.store_id).toBeTruthy();
     expect(assigned.response.userInfo.workstation).toBeTruthy();
+  });
+
+  test('[USR-03] /userinfo without assignStore does not assign store_id or workstation', async () => {
+    // Mock-only: on a live agent the profile may already carry a store from earlier use.
+    test.skip(!IS_MOCK, 'Requires a profile with no store assignment');
+    const plain = await client.send('/userinfo', { employeeId: 'rt00001' });
+    expect(plain.statusCode).toBe(200);
+    expect(plain.response.userInfo.store_id).toBeUndefined();
+    expect(plain.response.userInfo.workstation).toBeUndefined();
   });
 
   // ===========================================================================
@@ -1109,6 +1126,14 @@ test.describe('Charlie StoreOS Security Agent - Specification Coverage', () => {
     expect(res.statusCode).toBe(200);
     expect(res.response.userTokens).toHaveLength(1);
     expect(res.response.userTokens[0].type).toBe('PING');
+  });
+
+  test('[TOK-03] /user/token returns 400/1510 when the IDP is down', async () => {
+    test.skip(!IS_MOCK, 'IDP outage requires fault injection');
+    await setMockState({ idpDown: true });
+    const res = await client.send('/user/token', { employeeId: 'rt00001', tokenType: ['PING'] });
+    expect(res.statusCode).toBe(400);
+    expect(res.response.errorInfo.code).toBe(1510);
   });
 
   // ===========================================================================

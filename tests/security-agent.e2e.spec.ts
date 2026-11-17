@@ -25,7 +25,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   // =========================================================================
   // 1. PROTOCOL ENVELOPE, HEALTH CHECK & AUDIT LOGGING RULES
   // =========================================================================
-  test('01. /healthCheck returns 200, DB mode, camera status, and excludes success from SecurityLog', async () => {
+  test('01. /healthCheck returns 200 with timeTaken, action code 900, DB mode and camera status', async () => {
     const res = await client.send('/healthCheck');
     expect(res.statusCode).toBe(200);
     expect(res.path).toBe('/healthCheck');
@@ -34,12 +34,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(res.response.actionResult.code).toBe(900);
     expect(res.response.databaseMode).toBe('DB');
     expect(res.response.cameraStatus.cameraEnabled).toBe(true);
-
-    if (IS_MOCK) {
-      const state = await inspectMockState();
-      const hcLogs = state.securityLogs.filter((l: any) => l.actionPerformed === '/healthCheck');
-      expect(hcLogs.length).toBe(0);
-    }
+    // SecurityLog exclusion of a successful /healthCheck: [LOG-07] (mock-only).
   });
 
   // =========================================================================
@@ -499,7 +494,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   // 9. TOKENS, TEMP PROFILES & SPONSOR LOGIN
   //    (in-flight transactions: TRM-01 in spec-coverage)
   // =========================================================================
-  test('34. /user/token validates input (9510), unknown user (6500) and IDP outage (1510)', async () => {
+  test('34. /user/token validates input (9510) and rejects an unknown user (6500)', async () => {
     const missing = await client.send('/user/token', {});
     expect(missing.statusCode).toBe(400);
     expect(missing.response.errorInfo.code).toBe(9510);
@@ -507,12 +502,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     const unknown = await client.send('/user/token', { employeeId: 'unknown_999', tokenType: ['PING'] });
     expect(unknown.statusCode).toBe(400);
     expect(unknown.response.errorInfo.code).toBe(6500);
-
-    test.skip(!IS_MOCK, 'IDP outage requires fault injection');
-    await setMockState({ idpDown: true });
-    const idpDown = await client.send('/user/token', { employeeId: 'rt00001', tokenType: ['PING'] });
-    expect(idpDown.statusCode).toBe(400);
-    expect(idpDown.response.errorInfo.code).toBe(1510);
+    // IDP outage (1510): [TOK-03] (mock-only).
   });
 
   test('35. Temp employee with a valid profile authenticates biometrically after enrollment', async () => {
