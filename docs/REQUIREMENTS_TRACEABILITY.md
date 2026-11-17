@@ -20,6 +20,19 @@ STUDY, LAYMAN and TECH are summaries of SPEC. Where they disagree with SPEC, thi
 * **Manual**: the requirement is about the installer, operating system, files, hardware, cloud back end or screen layout. It cannot be proven through the WebSocket API. A manual test case (`MTC-nn`) is written in section 4 so it can still be executed and signed off.
 * **Spec gap**: the specification does not define the behaviour, so no pass/fail can be written. Listed in section 5.
 
+### Coverage column
+
+Every row in section 2 has a **Coverage** label, taken from which tests actually run with `USE_MOCK_AGENT=false`:
+
+| Label | Meaning |
+|---|---|
+| **mock + live** | At least one listed test runs against a live agent in the default, read-only live mode. |
+| **mock + live †** | The only live-capable tests change data, so they run live only with `ALLOW_LIVE_MUTATIONS=true` on a disposable terminal. |
+| **mock-only** | Every listed test is skipped against a live agent, or the assertion for this requirement runs only on the mock. A pass says nothing about the real agent. |
+| **manual only** | No automated test; covered only by a manual case in section 4. |
+
+A note in brackets after a label means only part of the row runs live. Totals across section 2 (129 requirements, with the 20-row translation table in 2.7 counted once): 31 **mock + live**, 21 **mock + live †**, 72 **mock-only**, 5 **manual only**.
+
 ### Run summary
 
 | Mode | Command | Result |
@@ -28,201 +41,203 @@ STUDY, LAYMAN and TECH are summaries of SPEC. Where they disagree with SPEC, thi
 | Live agent, read-safe | `USE_MOCK_AGENT=false AGENT_WS_URL=ws://<ip>:8080 npm test` | 29 executed, 106 skipped (need fault injection or data changes) |
 | Live agent, data changes allowed (disposable terminal only) | add `ALLOW_LIVE_MUTATIONS=true` | 46 executed, 89 skipped (need fault injection) |
 
-The live-mode figures were obtained by running live mode against the mock's WebSocket port, so they prove the live subset does not depend on mock-only features. They are **not** a run against a real StoreOS agent. A run against a real agent is still required before sign-off.
+The live-mode figures were obtained by running live mode against the mock's WebSocket port (last re-checked 2026-11-17 on `main` at `360817d`: 29 and 46 executed, 0 failed), so they prove the live subset does not depend on mock-only features. They are **not** a run against a real StoreOS agent. A run against a real agent is still required before sign-off.
 
 ## 2. Automated coverage by requirement
 
 ### 2.1 WebSocket protocol (SPEC "WebSocket API common definitions", TECH sec. 2)
 
-| Requirement | Source | Tests |
-|---|---|---|
-| Every request has a correlationID; every response reflects it | SPEC correlationID | T01, PRO-01, PRO-02 |
-| Concurrent requests are distinguished by correlationID | SPEC correlationID 3.1 | PRO-02 |
-| `path` echoed in the response | SPEC path | T01, PRO-01 |
-| Response has top-level `statusCode` (200 success, 400 failure) | SPEC response | PRO-01 and every endpoint test |
-| Response is inside `response`, with `actionResult`, and `errorInfo` on errors | SPEC response | PRO-01 |
-| `timeTaken` on every response | SPEC response 15.5 | T01, PRO-01 |
-| `processingMs` on biometric auth, biometric enrollment, barcode auth | SPEC Metrics | T08, PRO-04 |
-| Malformed frame does not take the agent down | robustness | PRO-03 (mock only) |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| Every request has a correlationID; every response reflects it | SPEC correlationID | T01, PRO-01, PRO-02 | **mock + live** |
+| Concurrent requests are distinguished by correlationID | SPEC correlationID 3.1 | PRO-02 | **mock + live** |
+| `path` echoed in the response | SPEC path | T01, PRO-01 | **mock + live** |
+| Response has top-level `statusCode` (200 success, 400 failure) | SPEC response | PRO-01 and every endpoint test | **mock + live** |
+| Response is inside `response`, with `actionResult`, and `errorInfo` on errors | SPEC response | PRO-01 | **mock + live** |
+| `timeTaken` on every response | SPEC response 15.5 | T01, PRO-01 | **mock + live** |
+| `processingMs` on biometric auth, biometric enrollment, barcode auth | SPEC Metrics | T08, PRO-04 | **mock + live** (T08 covers biometric auth read-only; barcode auth and enrollment, via PRO-04, need `ALLOW_LIVE_MUTATIONS`) |
+| Malformed frame does not take the agent down | robustness | PRO-03 (mock only) | **mock-only** |
 
 ### 2.2 Logging (SPEC "Logging", "SecurityLog Info", "ErrorLog Info")
 
-| Requirement | Source | Tests |
-|---|---|---|
-| Successful `/healthCheck` is not in SecurityLog | SPEC Logging 17.2 | T01 |
-| Failed `/healthCheck` goes to ErrorLog, not SecurityLog | SPEC Logging 18.2 | T02, LOG-01 |
-| All other calls are logged in SecurityLog with appId `StoreOS`, employeeId, storeId, machineId, timestamp, correlationId, timeTakenMs, actionResult string | SPEC SecurityLog | LOG-02, LOG-04 |
-| Errors are logged in ErrorLog with errorCode, errorMessage, correlationId, timeTakenMs | SPEC ErrorLog | T02, LOG-03 |
-| Passwords are never in responses or logs (API level) | SPEC Important pt 9 | LOG-05 (file-level check: MTC-06) |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| Successful `/healthCheck` is not in SecurityLog | SPEC Logging 17.2 | T01 | **mock-only** (T01 runs live, but its SecurityLog check runs only on the mock) |
+| Failed `/healthCheck` goes to ErrorLog, not SecurityLog | SPEC Logging 18.2 | T02, LOG-01 | **mock-only** |
+| All other calls are logged in SecurityLog with appId `StoreOS`, employeeId, storeId, machineId, timestamp, correlationId, timeTakenMs, actionResult string | SPEC SecurityLog | LOG-02, LOG-04 | **mock-only** |
+| Errors are logged in ErrorLog with errorCode, errorMessage, correlationId, timeTakenMs | SPEC ErrorLog | T02, LOG-03 | **mock-only** |
+| Passwords are never in responses or logs (API level) | SPEC Important pt 9 | LOG-05 (file-level check: MTC-06) | **mock-only** |
 
 ### 2.3 Health (SPEC `/healthCheck`, `/healthStatusUpdate`)
 
-| Requirement | Source | Tests |
-|---|---|---|
-| `/healthCheck` returns service, camera, database connection, `databaseMode`, `uiStatus` | SPEC healthCheck; Dec 10 2025 | T01, HEA-01 |
-| `databaseMode` is `Memory` after a DB failure | SPEC healthCheck; DB failure | T22, DBF-01 |
-| IDP outage reported as `idpStatus` DOWN / `allServicesDown` / 1515 while still returning 200 | SPEC healthCheck; Jul 29 2025 | HEA-02 |
-| `uiStatus` is -1 without a graphical session | SPEC healthCheck | HEA-03 |
-| Health check failure returns 9502 | SPEC healthCheck | T02 |
-| `/healthStatusUpdate` heartbeat is pushed to connected clients without a request | SPEC healthStatusUpdate 4.2 | HSU-01 |
-| Event-driven update on camera change | SPEC healthStatusUpdate 4.4 | HSU-02 |
-| Event-driven update on connectivity change | SPEC healthStatusUpdate 4.4 | HSU-03 |
-| Heartbeat interval configurable in the .ini file | SPEC healthStatusUpdate 4.1 | MTC-04 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| `/healthCheck` returns service, camera, database connection, `databaseMode`, `uiStatus` | SPEC healthCheck; Dec 10 2025 | T01, HEA-01 | **mock + live** |
+| `databaseMode` is `Memory` after a DB failure | SPEC healthCheck; DB failure | T22, DBF-01 | **mock-only** |
+| IDP outage reported as `idpStatus` DOWN / `allServicesDown` / 1515 while still returning 200 | SPEC healthCheck; Jul 29 2025 | HEA-02 | **mock-only** |
+| `uiStatus` is -1 without a graphical session | SPEC healthCheck | HEA-03 | **mock-only** |
+| Health check failure returns 9502 | SPEC healthCheck | T02 | **mock-only** |
+| `/healthStatusUpdate` heartbeat is pushed to connected clients without a request | SPEC healthStatusUpdate 4.2 | HSU-01 | **mock-only** |
+| Event-driven update on camera change | SPEC healthStatusUpdate 4.4 | HSU-02 | **mock-only** |
+| Event-driven update on connectivity change | SPEC healthStatusUpdate 4.4 | HSU-03 | **mock-only** |
+| Heartbeat interval configurable in the .ini file | SPEC healthStatusUpdate 4.1 | MTC-04 | **manual only** |
 
 ### 2.4 `/authenticate/credentials`
 
-| Requirement | Source | Tests |
-|---|---|---|
-| Regular employee success: 601, `isBiometricRegistered`, `userInfo` | SPEC credentials; TECH TC02 | T03 |
-| Invalid password: 651/6501 | SPEC credentials failure | T04, CRD-04 |
-| Missing mandatory field: 9510 | SPEC (common) | T04 |
-| IDP unreachable: 6503 | SPEC credentials failure; Nov 5 2025 | T05 |
-| `isLogin=true` stores credentialType `credentials` and credentialRefId = correlationID | SPEC credentials | T03, CRD-02 |
-| `isLogin=false` returns previously stored values, or omits them when nothing is stored | SPEC credentials 4.3.1 | CRD-01, CRD-02 |
-| Temporary employee (`isTempEmployee=true`) uses the temp-employee flow and returns `sosToken` | SPEC credentials | CRD-03 |
-| Temp employee `sponsorId` returned only when `isLogin=true` | SPEC credentials | T37 |
-| Password never cached or logged | SPEC credentials note | LOG-05 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| Regular employee success: 601, `isBiometricRegistered`, `userInfo` | SPEC credentials; TECH TC02 | T03 | **mock + live** |
+| Invalid password: 651/6501 | SPEC credentials failure | T04, CRD-04 | **mock + live** |
+| Missing mandatory field: 9510 | SPEC (common) | T04 | **mock + live** |
+| IDP unreachable: 6503 | SPEC credentials failure; Nov 5 2025 | T05 | **mock-only** |
+| `isLogin=true` stores credentialType `credentials` and credentialRefId = correlationID | SPEC credentials | T03, CRD-02 | **mock + live** |
+| `isLogin=false` returns previously stored values, or omits them when nothing is stored | SPEC credentials 4.3.1 | CRD-01, CRD-02 | **mock + live †** (CRD-01, "omits when nothing is stored", is mock-only) |
+| Temporary employee (`isTempEmployee=true`) uses the temp-employee flow and returns `sosToken` | SPEC credentials | CRD-03 | **mock-only** |
+| Temp employee `sponsorId` returned only when `isLogin=true` | SPEC credentials | T37 | **mock-only** |
+| Password never cached or logged | SPEC credentials note | LOG-05 | **mock-only** |
 
 ### 2.5 `/register/biometric`
 
-| Requirement | Source | Tests |
-|---|---|---|
-| Missing employeeId or loginCorrelationID: 9510 | SPEC register biometric 4.1 | T07 |
-| employeeId not in cache: 6500 | SPEC 4.2 | T07 |
-| loginCorrelationID not in SecurityLog: 6500 | SPEC 4.3 | T07 |
-| loginCorrelationID of a failed login: 6501 | SPEC 4.4 | RGB-02 |
-| loginCorrelationID must come from `/authenticate/credentials` or `/register/tempEmployee` | SPEC 4.4.1 | RGB-03, T06 |
-| Success returns 100 "Face Enrollment Successful" | SPEC | T06, RGB-01 |
-| `consentVersion` and `state` are optional | SPEC register biometric table | RGB-01, T06, T23 |
-| Temp-employee duplicate profile: 1511 | SPEC 6.5 | T25, T26 |
-| Poor image quality during enrollment: 1502 | SPEC | T26 |
-| UI cannot start: 9500 | SPEC non-graphical | RGB-04 |
-| Closing the UI returns 9509 | SPEC UI definition | UI-01 |
-| Offline enrollment only for temporary (`tempRegistration`) users | SPEC offline temp | TMP-06, T23 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| Missing employeeId or loginCorrelationID: 9510 | SPEC register biometric 4.1 | T07 | **mock + live** |
+| employeeId not in cache: 6500 | SPEC 4.2 | T07 | **mock + live** |
+| loginCorrelationID not in SecurityLog: 6500 | SPEC 4.3 | T07 | **mock + live** |
+| loginCorrelationID of a failed login: 6501 | SPEC 4.4 | RGB-02 | **mock-only** |
+| loginCorrelationID must come from `/authenticate/credentials` or `/register/tempEmployee` | SPEC 4.4.1 | RGB-03, T06 | **mock + live** |
+| Success returns 100 "Face Enrollment Successful" | SPEC | T06, RGB-01 | **mock + live †** |
+| `consentVersion` and `state` are optional | SPEC register biometric table | RGB-01, T06, T23 | **mock + live †** |
+| Temp-employee duplicate profile: 1511 | SPEC 6.5 | T25, T26 | **mock + live †** |
+| Poor image quality during enrollment: 1502 | SPEC | T26 | **mock-only** |
+| UI cannot start: 9500 | SPEC non-graphical | RGB-04 | **mock-only** |
+| Closing the UI returns 9509 | SPEC UI definition | UI-01 | **mock-only** |
+| Offline enrollment only for temporary (`tempRegistration`) users | SPEC offline temp | TMP-06, T23 | **mock-only** |
 
 ### 2.6 `/authenticate/biometric`
 
-| Requirement | Source | Tests |
-|---|---|---|
-| 1:1 match when employeeId given; success code 102, `modelUsed`, `processingMs` | SPEC biometric | T08 |
-| 1:N search when employeeId omitted; returns uuid and userInfo | SPEC biometric 9-10 | BIO-01 |
-| employeeId not in cache: 1506; 1:N no match: 1506 | SPEC biometric 8.2, 11.4 | BIO-02 |
-| Face mismatch: 153/1505 | SPEC biometric 10 | T10, TWN-02, OFF-02 |
-| Capture timeout: 153/1504 | SPEC failure case | T10, BIO-05 |
-| Interim re-scan prompts: 1503 no face, 1501 multiple faces, 1502 poor quality | SPEC register biometric 6.3 | BIO-04 |
-| Interim 1500 sent once for passive 1:N | SPEC biometric 4.6.4 | T09 |
-| No interim when authentication completes inside the delay window | SPEC biometric 4.6.3 | BIO-06 |
-| `liveness` and `liveness_reco` flags accepted | SPEC biometric payload | T08, BIO-01 |
-| `isLogin` semantics (credentialType `biometric`, stored values) | SPEC biometric | BIO-03 |
-| Expired token, IDP reachable: 153/1509 with userInfo | SPEC biometric 8 | BIO-07 |
-| Expired token, IDP down: 153/1510 with userInfo | SPEC biometric 8 | BIO-08, OFF-02 |
-| No sessionToken and no access_token: 1510 with userInfo | SPEC biometric 5.2 | BIO-09 |
-| DB error: 950/9524 and automatic switch to Memory mode | SPEC DB failure | T22, DBF-01 |
-| After the switch the agent keeps serving requests | SPEC DB failure 2 | DBF-01 |
-| Closing the UI: 9509 | SPEC UI definition | UI-01 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| 1:1 match when employeeId given; success code 102, `modelUsed`, `processingMs` | SPEC biometric | T08 | **mock + live** |
+| 1:N search when employeeId omitted; returns uuid and userInfo | SPEC biometric 9-10 | BIO-01 | **mock-only** |
+| employeeId not in cache: 1506; 1:N no match: 1506 | SPEC biometric 8.2, 11.4 | BIO-02 | **mock-only** |
+| Face mismatch: 153/1505 | SPEC biometric 10 | T10, TWN-02, OFF-02 | **mock-only** |
+| Capture timeout: 153/1504 | SPEC failure case | T10, BIO-05 | **mock-only** |
+| Interim re-scan prompts: 1503 no face, 1501 multiple faces, 1502 poor quality | SPEC register biometric 6.3 | BIO-04 | **mock-only** |
+| Interim 1500 sent once for passive 1:N | SPEC biometric 4.6.4 | T09 | **mock-only** |
+| No interim when authentication completes inside the delay window | SPEC biometric 4.6.3 | BIO-06 | **mock-only** |
+| `liveness` and `liveness_reco` flags accepted | SPEC biometric payload | T08, BIO-01 | **mock + live** |
+| `isLogin` semantics (credentialType `biometric`, stored values) | SPEC biometric | BIO-03 | **mock + live †** |
+| Expired token, IDP reachable: 153/1509 with userInfo | SPEC biometric 8 | BIO-07 | **mock-only** |
+| Expired token, IDP down: 153/1510 with userInfo | SPEC biometric 8 | BIO-08, OFF-02 | **mock-only** |
+| No sessionToken and no access_token: 1510 with userInfo | SPEC biometric 5.2 | BIO-09 | **mock-only** |
+| DB error: 950/9524 and automatic switch to Memory mode | SPEC DB failure | T22, DBF-01 | **mock-only** |
+| After the switch the agent keeps serving requests | SPEC DB failure 2 | DBF-01 | **mock-only** |
+| Closing the UI: 9509 | SPEC UI definition | UI-01 | **mock-only** |
 
 ### 2.7 CVS feedback message translation (SPEC "Feedback Messages", TECH sec. 4)
 
 All 20 rows of the table are asserted individually (`[UIG-01]`), plus T10 for the original three. Row "Invalid face background" maps to "N/A" in the spec, meaning no message; see section 5.
 
+Coverage: **mock-only**. Every translation test drives the mock's `simulateVisionCode` hook, so none of them runs against a live agent.
+
 ### 2.8 Digital Twin (SPEC "Digital Twin Biometric Authentication")
 
-| Requirement | Source | Tests |
-|---|---|---|
-| 1:N single match on a non-twin: authenticate | SPEC decision logic | TWN-01 |
-| 1:N single match on a twin: 1512 | SPEC decision logic | T11, TWN-01 |
-| 1:N multiple matches: 1512 | SPEC decision logic | TWN-01 |
-| 1:1 face mismatch: 1505 (even for a twin) | SPEC decision logic | TWN-02 |
-| 1:1 non-twin: authenticate | SPEC decision logic | TWN-02 |
-| 1:1 twin, `periodic_interval_minutes = 0`: 1512 | SPEC decision logic | TWN-03 |
-| 1:1 twin, `last_authenticated_at` missing: 1512 | SPEC decision logic | T11, TWN-05 |
-| 1:1 twin, interval expired: 1512; inside interval: authenticate | SPEC decision logic | TWN-04 |
-| Biometric success does not refresh `last_authenticated_at` | SPEC key points | TWN-04 |
-| `last_authenticated_at` updated by credentials, barcode, and `/userinfo` with `assignStore` | SPEC key points | T11, TWN-06 |
-| Missing twin fields default to `unknown`, `[]`, `null` | SPEC cache requirements | MTC-22 |
-| TECH TC04 (twin 1:1 gets 1512) | TECH | T11, TWN-05 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| 1:N single match on a non-twin: authenticate | SPEC decision logic | TWN-01 | **mock-only** |
+| 1:N single match on a twin: 1512 | SPEC decision logic | T11, TWN-01 | **mock-only** |
+| 1:N multiple matches: 1512 | SPEC decision logic | TWN-01 | **mock-only** |
+| 1:1 face mismatch: 1505 (even for a twin) | SPEC decision logic | TWN-02 | **mock-only** |
+| 1:1 non-twin: authenticate | SPEC decision logic | TWN-02 | **mock-only** |
+| 1:1 twin, `periodic_interval_minutes = 0`: 1512 | SPEC decision logic | TWN-03 | **mock-only** |
+| 1:1 twin, `last_authenticated_at` missing: 1512 | SPEC decision logic | T11, TWN-05 | **mock-only** |
+| 1:1 twin, interval expired: 1512; inside interval: authenticate | SPEC decision logic | TWN-04 | **mock-only** |
+| Biometric success does not refresh `last_authenticated_at` | SPEC key points | TWN-04 | **mock-only** |
+| `last_authenticated_at` updated by credentials, barcode, and `/userinfo` with `assignStore` | SPEC key points | T11, TWN-06 | **mock-only** |
+| Missing twin fields default to `unknown`, `[]`, `null` | SPEC cache requirements | MTC-22 | **manual only** |
+| TECH TC04 (twin 1:1 gets 1512) | TECH | T11, TWN-05 | **mock-only** |
 
 ### 2.9 Barcodes (`/register/barcode`, `/authenticate/barcode`)
 
-| Requirement | Source | Tests |
-|---|---|---|
-| Barcode is `BI` + 11 random alphanumeric characters (13 total), unique | SPEC register barcode 6 | T12, BAR-04 |
-| Success returns 602, barcodeData, firstName, middleName, lastName ("" if unknown) | SPEC register barcode 7 | BAR-01 |
-| Missing employeeId or validity: 652/9510 | SPEC register barcode 4.2 | BAR-02 |
-| employeeId not in cache: 652/6500 | SPEC register barcode 4.4 | T27 |
-| Expired temp profile cannot create a barcode | SPEC register barcode 4.4.3 | BAR-08 |
-| PIN: 4 digits, string, numbers only | SPEC register barcode 5.2 | T27 |
-| PIN mandatory when `FallBackAuthWithPinEnabled=Y`, optional when `N` | SPEC register/authenticate barcode | BAR-03 |
-| `validity` (seconds) controls expiry; expired barcode: 653/6522 | SPEC authenticate barcode 4.4 | T13, BAR-05 |
-| Success returns 603 | SPEC authenticate barcode | T12, BAR-07 |
-| Barcode matching is case-insensitive | SPEC Jan 3 2025 | T12 |
-| Wrong PIN: 6523 | SPEC authenticate barcode | T12, LOG-03 |
-| employeeId in payload must match the barcode owner: 6524 | SPEC Oct 9 2026 | T12 |
-| employeeId in payload is optional | SPEC authenticate barcode note; TECH TC03 | BAR-07 |
-| Missing barcodeData: 653/9510; unknown barcode: 6522 | SPEC authenticate barcode 4.3 | BAR-06 |
-| `isLogin=true` stores credentialType `barcode` | SPEC authenticate barcode | BAR-07 |
-| Temp-registered barcode usable offline with PIN, rejected (6522) once IdPs are back | SPEC offline temp 2-3 | TMP-02 |
-| Barcode with PIN works in headless mode; without PIN returns 9500 | SPEC non-graphical 4.4 | T21, HDL-01, HDL-02 |
-| TECH TC03 (create and validate) | TECH | T12, BAR-07 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| Barcode is `BI` + 11 random alphanumeric characters (13 total), unique | SPEC register barcode 6 | T12, BAR-04 | **mock + live †** |
+| Success returns 602, barcodeData, firstName, middleName, lastName ("" if unknown) | SPEC register barcode 7 | BAR-01 | **mock + live †** |
+| Missing employeeId or validity: 652/9510 | SPEC register barcode 4.2 | BAR-02 | **mock + live** |
+| employeeId not in cache: 652/6500 | SPEC register barcode 4.4 | T27 | **mock + live** |
+| Expired temp profile cannot create a barcode | SPEC register barcode 4.4.3 | BAR-08 | **mock-only** |
+| PIN: 4 digits, string, numbers only | SPEC register barcode 5.2 | T27 | **mock + live** |
+| PIN mandatory when `FallBackAuthWithPinEnabled=Y`, optional when `N` | SPEC register/authenticate barcode | BAR-03 | **mock-only** |
+| `validity` (seconds) controls expiry; expired barcode: 653/6522 | SPEC authenticate barcode 4.4 | T13, BAR-05 | **mock + live †** |
+| Success returns 603 | SPEC authenticate barcode | T12, BAR-07 | **mock + live †** |
+| Barcode matching is case-insensitive | SPEC Jan 3 2025 | T12 | **mock + live †** |
+| Wrong PIN: 6523 | SPEC authenticate barcode | T12, LOG-03 | **mock + live †** (LOG-03 is mock-only) |
+| employeeId in payload must match the barcode owner: 6524 | SPEC Oct 9 2026 | T12 | **mock + live †** |
+| employeeId in payload is optional | SPEC authenticate barcode note; TECH TC03 | BAR-07 | **mock + live †** |
+| Missing barcodeData: 653/9510; unknown barcode: 6522 | SPEC authenticate barcode 4.3 | BAR-06 | **mock + live** |
+| `isLogin=true` stores credentialType `barcode` | SPEC authenticate barcode | BAR-07 | **mock + live †** |
+| Temp-registered barcode usable offline with PIN, rejected (6522) once IdPs are back | SPEC offline temp 2-3 | TMP-02 | **mock-only** |
+| Barcode with PIN works in headless mode; without PIN returns 9500 | SPEC non-graphical 4.4 | T21, HDL-01, HDL-02 | **mock-only** |
+| TECH TC03 (create and validate) | TECH | T12, BAR-07 | **mock + live †** |
 
 ### 2.10 Temporary and offline employees
 
-| Requirement | Source | Tests |
-|---|---|---|
-| `/register/tempEmployee` success returns 900 | SPEC tempEmployee | T06 |
-| Empty or incomplete payload: 951/9510 | SPEC tempEmployee 4.2 | TMP-01, T24 |
-| Duplicate temp profile: 1511 | SPEC | T25 |
-| Offline registration, enrollment and biometric authentication for temp users | SPEC offline 1-2 | T23 |
-| Valid profile authenticates; expired profile rejected with 1506 | SPEC biometric 8.1.4 | T35, T36 |
-| Revalidation, same store: success, local profile replaced | SPEC offline 3 | TMP-03 |
-| Revalidation, other store: 1509 with `storeIdMismatch: true`, not cached | SPEC offline 3 | T23, TMP-04 |
-| Revalidation, no profile: 1506 | SPEC offline 3 | TMP-05 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| `/register/tempEmployee` success returns 900 | SPEC tempEmployee | T06 | **mock + live †** |
+| Empty or incomplete payload: 951/9510 | SPEC tempEmployee 4.2 | TMP-01, T24 | **mock + live** |
+| Duplicate temp profile: 1511 | SPEC | T25 | **mock + live †** |
+| Offline registration, enrollment and biometric authentication for temp users | SPEC offline 1-2 | T23 | **mock-only** |
+| Valid profile authenticates; expired profile rejected with 1506 | SPEC biometric 8.1.4 | T35, T36 | **mock + live †** (T36, the expired-profile case, is mock-only) |
+| Revalidation, same store: success, local profile replaced | SPEC offline 3 | TMP-03 | **mock-only** |
+| Revalidation, other store: 1509 with `storeIdMismatch: true`, not cached | SPEC offline 3 | T23, TMP-04 | **mock-only** |
+| Revalidation, no profile: 1506 | SPEC offline 3 | TMP-05 | **mock-only** |
 
 ### 2.11 Offline mode (SPEC "Offline Mode Support", "Agent Offline Resilience")
 
-| Requirement | Source | Tests |
-|---|---|---|
-| Offline 1:1 and 1:N succeed from cache with valid tokens | SPEC offline | OFF-01 |
-| Offline expired token: 1510 with cached userInfo, no refresh | SPEC offline | OFF-02 |
-| Offline unknown user: 1506; mismatch: 1505 | SPEC offline | OFF-02 |
-| Logs queue as pending offline and are synced afterwards | SPEC local log storage | OFF-03 |
-| CloudHealthMonitor, LogReplayEngine backoff | SPEC resilience | MTC-13, MTC-14 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| Offline 1:1 and 1:N succeed from cache with valid tokens | SPEC offline | OFF-01 | **mock-only** |
+| Offline expired token: 1510 with cached userInfo, no refresh | SPEC offline | OFF-02 | **mock-only** |
+| Offline unknown user: 1506; mismatch: 1505 | SPEC offline | OFF-02 | **mock-only** |
+| Logs queue as pending offline and are synced afterwards | SPEC local log storage | OFF-03 | **mock-only** |
+| CloudHealthMonitor, LogReplayEngine backoff | SPEC resilience | MTC-13, MTC-14 | **manual only** |
 
 ### 2.12 Remaining endpoints
 
-| Requirement | Source | Tests |
-|---|---|---|
-| `/userinfo` returns profile; store_id/workstation only with `assignStore` | SPEC userinfo | T14, USR-02 |
-| `/userinfo` unknown employee: 651/6500 (with and without `assignStore`) | SPEC userinfo failure | USR-01, T20 |
-| `/userinfo` returns credentialType and credentialRefId | SPEC userinfo step 6 | USR-02 |
-| `/userinfo` 90-minute refresh with `DisableUserSync` / `SilentModeEnabled` | SPEC userinfo step 3 | MTC-23 |
-| `/terminate/transaction` unknown target: 950/9503 | SPEC terminate | T18 |
-| `/terminate/transaction` cancels an in-flight transaction (200/900) | SPEC terminate 4.3-4.4 | T31 |
-| Only the targeted transaction is terminated | SPEC terminate 4.3 | TRM-01 |
-| Transaction that is not terminated completes normally | SPEC terminate | T32 |
-| `/forgetMe` success removes the profile; later lookups return 6500 | SPEC forgetMe | T20 |
-| `/forgetMe` unknown employee: 651/6500; `deleteFaceId` optional | SPEC forgetMe 4.2-4.3 | FGT-01, FGT-02 |
-| `/forgetMe` deletion failure: 9506, profile kept | SPEC forgetMe 4.4 | FGT-03 |
-| `/uploadLogs` accepts `error`, `info`, `debug`, `all` | SPEC uploadLogs | T19, UPL-01 |
-| `/uploadLogs` rejects other or missing `logType` | SPEC uploadLogs 8.1 | T19, UPL-02 |
-| `/setConfiguration` applies settings; empty payload rejected | SPEC setConfiguration | CFG-02, CFG-03 |
-| Restart only when a restart-requiring key actually changes | SPEC automatic self-restart | T17, CFG-01 |
-| `/user/token` returns PING and SM tokens with `createdAt` and `expiresIn` | SPEC user/token | T15, TOK-01 |
-| `/user/token` single type returns one token | SPEC user/token note | TOK-01 |
-| `/user/token` partial availability returns the available tokens with 200 | SPEC user/token 3 | TOK-02 |
-| `/user/token` errors: 6500, 9510, 1510 | SPEC user/token | T34 |
-| `/notify/bio-camera` ON/OFF return 706; idempotent | SPEC notify camera | T16, CAM-01 |
-| Camera OFF and no VV camera open: scan turns camera on and proceeds | SPEC notify camera 2 | T16 |
-| Camera OFF and VV camera open: 952/9520 | SPEC notify camera 2 | CAM-03 |
-| `DisableCamera` / `SilentModeEnabled`: ON returns success but camera stays off | SPEC notify camera 1 | CAM-02 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| `/userinfo` returns profile; store_id/workstation only with `assignStore` | SPEC userinfo | T14, USR-02 | **mock + live** (the "no store_id without `assignStore`" check is mock-only) |
+| `/userinfo` unknown employee: 651/6500 (with and without `assignStore`) | SPEC userinfo failure | USR-01, T20 | **mock + live** |
+| `/userinfo` returns credentialType and credentialRefId | SPEC userinfo step 6 | USR-02 | **mock + live †** |
+| `/userinfo` 90-minute refresh with `DisableUserSync` / `SilentModeEnabled` | SPEC userinfo step 3 | MTC-23 | **manual only** |
+| `/terminate/transaction` unknown target: 950/9503 | SPEC terminate | T18 | **mock + live** |
+| `/terminate/transaction` cancels an in-flight transaction (200/900) | SPEC terminate 4.3-4.4 | T31 | **mock-only** |
+| Only the targeted transaction is terminated | SPEC terminate 4.3 | TRM-01 | **mock-only** |
+| Transaction that is not terminated completes normally | SPEC terminate | T32 | **mock-only** |
+| `/forgetMe` success removes the profile; later lookups return 6500 | SPEC forgetMe | T20 | **mock + live †** |
+| `/forgetMe` unknown employee: 651/6500; `deleteFaceId` optional | SPEC forgetMe 4.2-4.3 | FGT-01, FGT-02 | **mock + live †** |
+| `/forgetMe` deletion failure: 9506, profile kept | SPEC forgetMe 4.4 | FGT-03 | **mock-only** |
+| `/uploadLogs` accepts `error`, `info`, `debug`, `all` | SPEC uploadLogs | T19, UPL-01 | **mock + live** |
+| `/uploadLogs` rejects other or missing `logType` | SPEC uploadLogs 8.1 | T19, UPL-02 | **mock + live** |
+| `/setConfiguration` applies settings; empty payload rejected | SPEC setConfiguration | CFG-02, CFG-03 | **mock + live** (only CFG-03, the empty-payload rejection, runs live; CFG-02, applying settings, is mock-only) |
+| Restart only when a restart-requiring key actually changes | SPEC automatic self-restart | T17, CFG-01 | **mock-only** |
+| `/user/token` returns PING and SM tokens with `createdAt` and `expiresIn` | SPEC user/token | T15, TOK-01 | **mock + live** |
+| `/user/token` single type returns one token | SPEC user/token note | TOK-01 | **mock + live** |
+| `/user/token` partial availability returns the available tokens with 200 | SPEC user/token 3 | TOK-02 | **mock-only** |
+| `/user/token` errors: 6500, 9510, 1510 | SPEC user/token | T34 | **mock-only** (T34 asserts 6500 and 9510 before it skips on a live agent, but it is reported as skipped) |
+| `/notify/bio-camera` ON/OFF return 706; idempotent | SPEC notify camera | T16, CAM-01 | **mock-only** |
+| Camera OFF and no VV camera open: scan turns camera on and proceeds | SPEC notify camera 2 | T16 | **mock-only** |
+| Camera OFF and VV camera open: 952/9520 | SPEC notify camera 2 | CAM-03 | **mock-only** |
+| `DisableCamera` / `SilentModeEnabled`: ON returns success but camera stays off | SPEC notify camera 1 | CAM-02 | **mock-only** |
 
 ### 2.13 Non-graphical (headless) mode (SPEC "Security Agent non-graphical mode")
 
-| Requirement | Source | Tests |
-|---|---|---|
-| UI-dependent calls return 950/9500 with message "UI cannot be initialized" | SPEC | T21, HDL-01 |
-| `/healthCheck`, `/terminate/transaction`, `/register/barcode`, `/authenticate/barcode` with PIN, `/authenticate/credentials`, `/userinfo`, `/forgetMe` keep working | SPEC non-graphical 4 | T21, HDL-02 |
-| Agent starts and accepts connections without a graphical target | SPEC non-graphical 1-2 | MTC-03 |
+| Requirement | Source | Tests | Coverage |
+|---|---|---|---|
+| UI-dependent calls return 950/9500 with message "UI cannot be initialized" | SPEC | T21, HDL-01 | **mock-only** |
+| `/healthCheck`, `/terminate/transaction`, `/register/barcode`, `/authenticate/barcode` with PIN, `/authenticate/credentials`, `/userinfo`, `/forgetMe` keep working | SPEC non-graphical 4 | T21, HDL-02 | **mock-only** |
+| Agent starts and accepts connections without a graphical target | SPEC non-graphical 1-2 | MTC-03 | **manual only** |
 
 ## 3. Sample payloads from TECH section 6
 
