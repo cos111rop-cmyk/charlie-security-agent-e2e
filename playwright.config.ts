@@ -18,6 +18,7 @@ export default defineConfig({
   webServer: useMock
     ? {
         command: 'npx tsx mock-server/server.ts',
+        env: { HEARTBEAT_MS: '400' },
         port: 8080,
         reuseExistingServer: !process.env.CI,
         timeout: 15_000,
