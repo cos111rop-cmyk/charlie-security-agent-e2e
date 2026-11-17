@@ -31,17 +31,17 @@ Every row in section 2 has a **Coverage** label, taken from which tests actually
 | **mock-only** | Every listed test is skipped against a live agent, or the assertion for this requirement runs only on the mock. A pass says nothing about the real agent. |
 | **manual only** | No automated test; covered only by a manual case in section 4. |
 
-A note in brackets after a label means only part of the row runs live. Totals across section 2 (129 requirements, with the 20-row translation table in 2.7 counted once): 31 **mock + live**, 21 **mock + live †**, 72 **mock-only**, 5 **manual only**.
+A note in brackets after a label means only part of the row runs live. Totals across section 2 (130 requirements, with the 20-row translation table in 2.7 counted once): 31 **mock + live**, 21 **mock + live †**, 73 **mock-only**, 5 **manual only**. Behaviour the specification does not define (liveness failure, attempt limits and lock-out, barcode reuse) has no row here and no test; see section 5, items 13, 20 and 21.
 
 ### Run summary
 
 | Mode | Command | Result |
 |---|---|---|
-| Mock agent (default) | `npm test` | 126 executed, 126 pass |
-| Live agent, read-safe | `USE_MOCK_AGENT=false AGENT_WS_URL=ws://<ip>:8080 npm test` | 26 executed, 100 skipped (need fault injection or data changes) |
-| Live agent, data changes allowed (disposable terminal only) | add `ALLOW_LIVE_MUTATIONS=true` | 43 executed, 83 skipped (need fault injection) |
+| Mock agent (default) | `npm test` | 127 executed, 127 pass |
+| Live agent, read-safe | `USE_MOCK_AGENT=false AGENT_WS_URL=ws://<ip>:8080 npm test` | 26 executed, 101 skipped (need fault injection or data changes) |
+| Live agent, data changes allowed (disposable terminal only) | add `ALLOW_LIVE_MUTATIONS=true` | 43 executed, 84 skipped (need fault injection) |
 
-The live-mode figures were obtained by running live mode against the mock's WebSocket port (last re-checked 2026-11-17 on `main` at `d92a0b5` plus the test clean-up: 26 and 43 executed, 0 failed), so they prove the live subset does not depend on mock-only features. They are **not** a run against a real StoreOS agent. A run against a real agent is still required before sign-off.
+The live-mode figures were obtained by running live mode against the mock's WebSocket port (last re-checked 2026-11-17 on `main` at `146f1a4` plus LOG-06: 26 and 43 executed, 0 failed), so they prove the live subset does not depend on mock-only features. They are **not** a run against a real StoreOS agent. A run against a real agent is still required before sign-off.
 
 ### Retired core test IDs
 
@@ -85,6 +85,7 @@ T10 was reduced to its 1:1 face-mismatch check; its capture-timeout and glasses-
 | All other calls are logged in SecurityLog with appId `StoreOS`, employeeId, storeId, machineId, timestamp, correlationId, timeTakenMs, actionResult string | SPEC SecurityLog | LOG-02, LOG-04 | **mock-only** |
 | Errors are logged in ErrorLog with errorCode, errorMessage, correlationId, timeTakenMs | SPEC ErrorLog | LOG-01, LOG-03 | **mock-only** |
 | Passwords are never in responses or logs (API level) | SPEC Important pt 9 | LOG-05 (file-level check: MTC-06) | **mock-only** |
+| `sosToken`, barcode PINs, barcodes and PING/SM tokens (access, id, refresh, session) never appear in SecurityLog or ErrorLog, on success or failure paths (API level) | SPEC Important pt 9 (same principle as passwords) | LOG-06 (file-level check: MTC-06) | **mock-only** |
 
 ### 2.3 Health (SPEC `/healthCheck`, `/healthStatusUpdate`)
 
@@ -278,7 +279,7 @@ These requirements cannot be proven through the WebSocket API. Each case lists t
 | MTC-03 | Agent starts and accepts connections without a graphical target (SPEC non-graphical) | Boot the machine to a non-graphical target. Connect a WebSocket client and call `/healthCheck`, then `/authenticate/biometric` with `uiDelay: 0`. | Connection accepted; health check returns 200 with `uiStatus: -1`; the biometric call returns 9500. |
 | MTC-04 | Face thresholds, heartbeat interval and capture timeout are configurable in `config.ini` (SPEC Important pt 7; healthStatusUpdate 4.1; register biometric 6.2) | Change a face threshold, the heartbeat interval and the 30 s capture limit. Restart. Observe behaviour. | New values take effect: threshold changes match/reject results, heartbeat arrives at the configured interval, capture times out at the configured limit. |
 | MTC-05 | Debug log retention and rollover (SPEC Important pt 8) | Fill the debug log past 30 MB. Reinstall the package. | Log rolls over at 30 MB; rolled file stays in the same path; logs survive reinstall. |
-| MTC-06 | No plaintext password in debug logs (SPEC Important pt 9) | Run `/authenticate/credentials` with a known password. `grep` all debug log files. | The password string is not present. |
+| MTC-06 | No plaintext secrets in debug logs or the log database (SPEC Important pt 9) | Run `/authenticate/credentials` with a known password, a temporary-employee login (note the `sosToken`), `/user/token` for PING and SM (note each token), and `/register/barcode` + `/authenticate/barcode` with a known PIN, once with a wrong PIN. `grep` all debug log files and dump the SecurityLog and ErrorLog tables for each noted value. | None of the password, `sosToken`, PINs, barcode or PING/SM tokens is present. |
 | MTC-07 | USB camera auto-reconnect (SPEC Important pt 10; STUDY sec. 3) | Unplug the USB camera, wait, plug it back in. Do not restart the service. Call `/healthCheck`, then `/authenticate/biometric`. | `cameraStatus` reports the disconnect, then recovery. Authentication works without a service restart. An event-driven `/healthStatusUpdate` is received on both changes. |
 | MTC-08 | Ditto SDK initialization failure (SPEC Important pt 11) | Make the Ditto SDK fail to initialize. Authenticate. | The agent keeps running, bypasses the local cache and uses the cloud directly; the failure is logged. |
 | MTC-09 | Self-restart writes config and logs (SPEC setConfiguration) | Change a restart-requiring key through `/setConfiguration`. Check `config.ini` and the logs. | New value saved in `config.ini`; log shows "Config changed for X. Restart required."; the agent restarts safely. Setting the same value again does nothing. |
@@ -313,13 +314,15 @@ These are places where the documents contradict each other or leave a behaviour 
 10. **Which keys require a restart** (`setConfiguration`) is not listed. The mock assumes `backend_url` and `store_id`.
 11. **`/healthStatusUpdate` interval units.** SPEC says "every x minutes" in one line and "x seconds" in another.
 12. **`/authenticate/barcode` with PIN required but missing.** Error code not defined. The mock returns 9510.
-13. **`BarcodeScanMaxAttempts` lock-out behaviour** is not defined; only that a 6524 mismatch counts as a failed attempt.
+13. **Attempt limits and lock-out are not defined.** `BarcodeScanMaxAttempts`, `AuthenticationFacialScanMaxAttempts` and `BiometricRegistrationFacialScanMaxAttempts` exist as settings, but SPEC does not say what happens when a limit is reached (error code, whether the barcode, user or terminal is locked, for how long, what resets the counter). The only rule is that a 6524 mismatch counts as a failed barcode attempt. The mock never reads these settings. **No test** until this is defined; a wrong-PIN loop could then run live with `ALLOW_LIVE_MUTATIONS=true`.
 14. **Android permissions flow** is marked "To be filled" in SPEC. Nothing to test.
 15. **"Invalid face background"** maps to "N/A" (no message) in SPEC. Not asserted.
 16. **Barcode characters.** STUDY says "11-digit random barcodes"; SPEC says alphanumeric ("BIBP2RNY123"). Suite follows SPEC.
 17. **Registration screens in SPEC** still show a back arrow although the change log replaced it with an X.
 18. **Interim `1500` timing for passive 1:1** (`uiDelay > 0`): SPEC says the interim is sent once the delay expires without a match, for any authentication. The mock only emits it for 1:N, so T09 covers 1:N and BIO-06 covers the no-interim case for a fast 1:1.
 19. **Refresh-token success path** during biometric authentication (expired access token, refresh succeeds) cannot be driven through the mock; covered by BIO-07/BIO-08 for the failure branches only.
+20. **Liveness failure (spoof attempt) is not defined.** SPEC accepts the `liveness` and `liveness_reco` flags and MTC-18 mentions an anti-spoof threshold of about 0.40, but no response (action or error code) is defined for a failed liveness check. The mock accepts the flags and ignores them, and has no way to simulate a presentation attack. **No test** until the response is defined. Even then it is mock-only through the API; against a real agent it needs a physical presentation-attack test (printed photo, screen replay, mask) as a manual case.
+21. **Barcode reuse after a successful authentication is not defined.** SPEC gives a `validity` in seconds but does not say whether a barcode is single-use. The mock accepts the same barcode again until it expires. **No test** until SPEC states whether a second use inside `validity` must succeed or fail (and with which code); it could then run live with `ALLOW_LIVE_MUTATIONS=true`.
 
 ## 6. Important limitation
 
