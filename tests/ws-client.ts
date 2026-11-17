@@ -2,12 +2,14 @@ import WebSocket from 'ws';
 
 export const WS_URL = process.env.AGENT_WS_URL || 'ws://127.0.0.1:8080';
 export const HTTP_CONTROL_URL = WS_URL.replace(/^ws/, 'http');
-export const IS_MOCK = process.env.USE_MOCK_AGENT !== 'false';
+export type AgentMode = 'mock' | 'live' | 'live-mutating';
 /**
- * Tests that create, change or delete data (register, forgetMe, setConfiguration, ...)
- * only run against a live agent when ALLOW_LIVE_MUTATIONS=true. Always allowed on the mock.
+ * Which agent the run targets. playwright.config.ts resolves it from --project (or the
+ * USE_MOCK_AGENT / ALLOW_LIVE_MUTATIONS aliases) and exports it as AGENT_MODE, so test
+ * workers see the same value.
  */
-export const CAN_MUTATE = IS_MOCK || process.env.ALLOW_LIVE_MUTATIONS === 'true';
+export const AGENT_MODE: AgentMode = (process.env.AGENT_MODE as AgentMode) || 'mock';
+export const IS_MOCK = AGENT_MODE === 'mock';
 
 export interface AgentEnvelope {
   statusCode: number;

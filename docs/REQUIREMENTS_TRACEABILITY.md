@@ -16,32 +16,34 @@ STUDY, LAYMAN and TECH are summaries of SPEC. Where they disagree with SPEC, thi
 ## 1. How to read this document
 
 * **Automated**: a Playwright test asserts the requirement. Core tests are numbered `01`-`37` in their titles and referred to here as `T01`-`T37` (file `tests/security-agent.e2e.spec.ts`). Numbers are kept stable when a test is removed, so there are gaps; see "Retired core test IDs" below. Specification tests carry a requirement tag such as `[BAR-05]` in the title (file `tests/spec-coverage.e2e.spec.ts`).
-* **Mock only**: the test needs the mock agent's control plane (fault injection or state inspection). It is skipped against a live agent.
+* **Mode tags**: every test carries exactly one of `@live` (read-only, runs against any agent), `@live-mutating` (changes agent data; live only on a disposable terminal) or `@mock-only` (needs the mock agent's control plane: fault injection or state inspection). The Playwright projects `mock`, `live` and `live-mutating` select tests by these tags, and a test run in a mode its tag does not allow fails instead of skipping.
 * **Manual**: the requirement is about the installer, operating system, files, hardware, cloud back end or screen layout. It cannot be proven through the WebSocket API. A manual test case (`MTC-nn`) is written in section 4 so it can still be executed and signed off.
 * **Spec gap**: the specification does not define the behaviour, so no pass/fail can be written. Listed in section 5.
 
 ### Coverage column
 
-Every row in section 2 has a **Coverage** label, taken from which tests actually run with `USE_MOCK_AGENT=false`:
+Every row in section 2 has a **Coverage** label, taken from the mode tags of the listed tests:
 
 | Label | Meaning |
 |---|---|
-| **mock + live** | At least one listed test runs against a live agent in the default, read-only live mode. |
-| **mock + live †** | The only live-capable tests change data, so they run live only with `ALLOW_LIVE_MUTATIONS=true` on a disposable terminal. |
-| **mock-only** | Every listed test is skipped against a live agent, or the assertion for this requirement runs only on the mock. A pass says nothing about the real agent. |
+| **mock + live** | At least one listed test is tagged `@live`, so it runs in the `live` project. |
+| **mock + live †** | The only live-capable tests are tagged `@live-mutating`, so they run live only in the `live-mutating` project, on a disposable terminal. |
+| **mock-only** | Every listed test is tagged `@mock-only`. A pass says nothing about the real agent. |
 | **manual only** | No automated test; covered only by a manual case in section 4. |
 
-A note in brackets after a label means only part of the row runs live. Totals across section 2 (130 requirements, with the 20-row translation table in 2.7 counted once): 31 **mock + live**, 21 **mock + live †**, 73 **mock-only**, 5 **manual only**. Behaviour the specification does not define (liveness failure, attempt limits and lock-out, barcode reuse) has no row here and no test; see section 5, items 13, 20 and 21.
+A note in brackets after a label means only part of the row runs live. Totals across section 2 (130 requirements, with the 20-row translation table in 2.7 counted once): 32 **mock + live**, 21 **mock + live †**, 72 **mock-only**, 5 **manual only**. Behaviour the specification does not define (liveness failure, attempt limits and lock-out, barcode reuse) has no row here and no test; see section 5, items 13, 20 and 21.
 
 ### Run summary
 
 | Mode | Command | Result |
 |---|---|---|
-| Mock agent (default) | `npm test` | 127 executed, 127 pass |
-| Live agent, read-safe | `USE_MOCK_AGENT=false AGENT_WS_URL=ws://<ip>:8080 npm test` | 26 executed, 101 skipped (need fault injection or data changes) |
-| Live agent, data changes allowed (disposable terminal only) | add `ALLOW_LIVE_MUTATIONS=true` | 43 executed, 84 skipped (need fault injection) |
+| Mock agent (default), project `mock` | `npm test` or `npm run test:mock` | 130 executed, 130 pass |
+| Live agent, project `live` (`@live`) | `AGENT_WS_URL=ws://<ip>:8080 npm run test:live` | 27 executed, 27 pass |
+| Live agent, project `live-mutating` (`@live` + `@live-mutating`; disposable terminal only) | `AGENT_WS_URL=ws://<ip>:8080 npm run test:live:mutating` | 44 executed, 44 pass |
 
-The live-mode figures were obtained by running live mode against the mock's WebSocket port (last re-checked 2026-11-17 on `main` at `146f1a4` plus LOG-06: 26 and 43 executed, 0 failed), so they prove the live subset does not depend on mock-only features. They are **not** a run against a real StoreOS agent. A run against a real agent is still required before sign-off.
+Live projects list only the tests they select, so nothing is reported as skipped; the other 86 tests are `@mock-only`. The older `USE_MOCK_AGENT=false [ALLOW_LIVE_MUTATIONS=true]` form selects the same projects. Client instructions for the live projects: [`README-LIVE.md`](../README-LIVE.md).
+
+The live-mode figures were obtained by running live mode against the mock's WebSocket port (last re-checked 2026-11-17 on `main` at `4844ab2` plus the live/mock split: 27 and 44 executed, 0 failed), so they prove the live subset does not depend on mock-only features. They are **not** a run against a real StoreOS agent. A run against a real agent is still required before sign-off.
 
 ### Retired core test IDs
 
@@ -61,6 +63,8 @@ These numbered tests were removed because a tagged test asserts the same thing. 
 
 T10 was reduced to its 1:1 face-mismatch check; its capture-timeout and glasses-guidance checks are covered by BIO-05 and UIG-01.
 
+Three tests were split so that no `@live` or `@live-mutating` test carries a mock-only assertion: T01's SecurityLog check moved to LOG-07, USR-02's "no store without `assignStore`" check to USR-03, and T34's IDP-outage (1510) check to TOK-03.
+
 ## 2. Automated coverage by requirement
 
 ### 2.1 WebSocket protocol (SPEC "WebSocket API common definitions", TECH sec. 2)
@@ -73,14 +77,14 @@ T10 was reduced to its 1:1 face-mismatch check; its capture-timeout and glasses-
 | Response has top-level `statusCode` (200 success, 400 failure) | SPEC response | PRO-01 and every endpoint test | **mock + live** |
 | Response is inside `response`, with `actionResult`, and `errorInfo` on errors | SPEC response | PRO-01 | **mock + live** |
 | `timeTaken` on every response | SPEC response 15.5 | T01, PRO-01 | **mock + live** |
-| `processingMs` on biometric auth, biometric enrollment, barcode auth | SPEC Metrics | T08, PRO-04 | **mock + live** (T08 covers biometric auth read-only; barcode auth and enrollment, via PRO-04, need `ALLOW_LIVE_MUTATIONS`) |
+| `processingMs` on biometric auth, biometric enrollment, barcode auth | SPEC Metrics | T08, PRO-04 | **mock + live** (T08 covers biometric auth read-only; barcode auth and enrollment, via PRO-04, need the `live-mutating` project) |
 | Malformed frame does not take the agent down | robustness | PRO-03 (mock only) | **mock-only** |
 
 ### 2.2 Logging (SPEC "Logging", "SecurityLog Info", "ErrorLog Info")
 
 | Requirement | Source | Tests | Coverage |
 |---|---|---|---|
-| Successful `/healthCheck` is not in SecurityLog | SPEC Logging 17.2 | T01 | **mock-only** (T01 runs live, but its SecurityLog check runs only on the mock) |
+| Successful `/healthCheck` is not in SecurityLog | SPEC Logging 17.2 | LOG-07 | **mock-only** |
 | Failed `/healthCheck` goes to ErrorLog, not SecurityLog | SPEC Logging 18.2 | LOG-01 | **mock-only** |
 | All other calls are logged in SecurityLog with appId `StoreOS`, employeeId, storeId, machineId, timestamp, correlationId, timeTakenMs, actionResult string | SPEC SecurityLog | LOG-02, LOG-04 | **mock-only** |
 | Errors are logged in ErrorLog with errorCode, errorMessage, correlationId, timeTakenMs | SPEC ErrorLog | LOG-01, LOG-03 | **mock-only** |
@@ -226,7 +230,7 @@ Coverage: **mock-only**. Every translation test drives the mock's `simulateVisio
 
 | Requirement | Source | Tests | Coverage |
 |---|---|---|---|
-| `/userinfo` returns profile; store_id/workstation only with `assignStore` | SPEC userinfo | T14, USR-02 | **mock + live** (the "no store_id without `assignStore`" check is mock-only) |
+| `/userinfo` returns profile; store_id/workstation only with `assignStore` | SPEC userinfo | T14, USR-02, USR-03 | **mock + live** (USR-03, "no store_id without `assignStore`", is mock-only) |
 | `/userinfo` unknown employee: 651/6500 (with and without `assignStore`) | SPEC userinfo failure | USR-01, T20 | **mock + live** |
 | `/userinfo` returns credentialType and credentialRefId | SPEC userinfo step 6 | USR-02 | **mock + live †** |
 | `/userinfo` 90-minute refresh with `DisableUserSync` / `SilentModeEnabled` | SPEC userinfo step 3 | MTC-23 | **manual only** |
@@ -244,7 +248,7 @@ Coverage: **mock-only**. Every translation test drives the mock's `simulateVisio
 | `/user/token` returns PING and SM tokens with `createdAt` and `expiresIn` | SPEC user/token | T15, TOK-01 | **mock + live** |
 | `/user/token` single type returns one token | SPEC user/token note | TOK-01 | **mock + live** |
 | `/user/token` partial availability returns the available tokens with 200 | SPEC user/token 3 | TOK-02 | **mock-only** |
-| `/user/token` errors: 6500, 9510, 1510 | SPEC user/token | T34 | **mock-only** (T34 asserts 6500 and 9510 before it skips on a live agent, but it is reported as skipped) |
+| `/user/token` errors: 6500, 9510, 1510 | SPEC user/token | T34, TOK-03 | **mock + live** (TOK-03, the IDP-outage 1510 case, is mock-only) |
 | `/notify/bio-camera` ON/OFF return 706; idempotent | SPEC notify camera | T16, CAM-01 | **mock-only** |
 | Camera OFF and no VV camera open: scan turns camera on and proceeds | SPEC notify camera 2 | T16 | **mock-only** |
 | Camera OFF and VV camera open: 952/9520 | SPEC notify camera 2 | CAM-03 | **mock-only** |
@@ -314,7 +318,7 @@ These are places where the documents contradict each other or leave a behaviour 
 10. **Which keys require a restart** (`setConfiguration`) is not listed. The mock assumes `backend_url` and `store_id`.
 11. **`/healthStatusUpdate` interval units.** SPEC says "every x minutes" in one line and "x seconds" in another.
 12. **`/authenticate/barcode` with PIN required but missing.** Error code not defined. The mock returns 9510.
-13. **Attempt limits and lock-out are not defined.** `BarcodeScanMaxAttempts`, `AuthenticationFacialScanMaxAttempts` and `BiometricRegistrationFacialScanMaxAttempts` exist as settings, but SPEC does not say what happens when a limit is reached (error code, whether the barcode, user or terminal is locked, for how long, what resets the counter). The only rule is that a 6524 mismatch counts as a failed barcode attempt. The mock never reads these settings. **No test** until this is defined; a wrong-PIN loop could then run live with `ALLOW_LIVE_MUTATIONS=true`.
+13. **Attempt limits and lock-out are not defined.** `BarcodeScanMaxAttempts`, `AuthenticationFacialScanMaxAttempts` and `BiometricRegistrationFacialScanMaxAttempts` exist as settings, but SPEC does not say what happens when a limit is reached (error code, whether the barcode, user or terminal is locked, for how long, what resets the counter). The only rule is that a 6524 mismatch counts as a failed barcode attempt. The mock never reads these settings. **No test** until this is defined; a wrong-PIN loop could then run in the `live-mutating` project.
 14. **Android permissions flow** is marked "To be filled" in SPEC. Nothing to test.
 15. **"Invalid face background"** maps to "N/A" (no message) in SPEC. Not asserted.
 16. **Barcode characters.** STUDY says "11-digit random barcodes"; SPEC says alphanumeric ("BIBP2RNY123"). Suite follows SPEC.
@@ -322,7 +326,7 @@ These are places where the documents contradict each other or leave a behaviour 
 18. **Interim `1500` timing for passive 1:1** (`uiDelay > 0`): SPEC says the interim is sent once the delay expires without a match, for any authentication. The mock only emits it for 1:N, so T09 covers 1:N and BIO-06 covers the no-interim case for a fast 1:1.
 19. **Refresh-token success path** during biometric authentication (expired access token, refresh succeeds) cannot be driven through the mock; covered by BIO-07/BIO-08 for the failure branches only.
 20. **Liveness failure (spoof attempt) is not defined.** SPEC accepts the `liveness` and `liveness_reco` flags and MTC-18 mentions an anti-spoof threshold of about 0.40, but no response (action or error code) is defined for a failed liveness check. The mock accepts the flags and ignores them, and has no way to simulate a presentation attack. **No test** until the response is defined. Even then it is mock-only through the API; against a real agent it needs a physical presentation-attack test (printed photo, screen replay, mask) as a manual case.
-21. **Barcode reuse after a successful authentication is not defined.** SPEC gives a `validity` in seconds but does not say whether a barcode is single-use. The mock accepts the same barcode again until it expires. **No test** until SPEC states whether a second use inside `validity` must succeed or fail (and with which code); it could then run live with `ALLOW_LIVE_MUTATIONS=true`.
+21. **Barcode reuse after a successful authentication is not defined.** SPEC gives a `validity` in seconds but does not say whether a barcode is single-use. The mock accepts the same barcode again until it expires. **No test** until SPEC states whether a second use inside `validity` must succeed or fail (and with which code); it could then run in the `live-mutating` project.
 
 ## 6. Important limitation
 
