@@ -96,7 +96,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   // =========================================================================
   // 3. TEMP EMPLOYEE REGISTRATION & BIOMETRIC ENROLLMENT
   // =========================================================================
-  test('06. /register/tempEmployee creates temporary profile and authenticates with sponsorId when isLogin=true', async () => {
+  test('06. /register/tempEmployee creates temporary profile and allows biometric enrollment with its registration correlationID', async () => {
     const tempId = 'T005900099';
     const reg = await client.send('/register/tempEmployee', {
       employeeId: tempId,
@@ -287,6 +287,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
       pin: '4354',
       validity: -1, // Already expired
     });
+    expect(reg.statusCode).toBe(200);
     const auth = await client.send('/authenticate/barcode', {
       barcodeData: reg.response.barcodeData,
       pin: '4354',
@@ -370,6 +371,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   test('19. /uploadLogs validates logType and syncs queued offline logs', async () => {
     const badType = await client.send('/uploadLogs', { logType: 'invalid_type' });
     expect(badType.statusCode).toBe(400);
+    expect(badType.response.errorInfo.code).toBe(9500);
 
     const okUpload = await client.send('/uploadLogs', { logType: 'all' });
     expect(okUpload.statusCode).toBe(200);
@@ -480,5 +482,90 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     });
     expect(onlineReval.response.errorInfo.code).toBe(1509);
     expect(onlineReval.storeIdMismatch).toBe(true);
+  });
+
+  // =========================================================================
+  // 8. NEGATIVE-PATH COVERAGE
+  // =========================================================================
+  const registerTemp = (employeeId: string) =>
+    client.send('/register/tempEmployee', {
+      employeeId,
+      consentGiven: true,
+      firstName: 'Temp',
+      familyName: 'User',
+      sponserId: 'rt00001',
+    });
+
+  test('24. /register/tempEmployee rejects missing mandatory fields with 9510', async () => {
+    const res = await client.send('/register/tempEmployee', { employeeId: 'T_MISSING_01', firstName: 'No' });
+    expect(res.statusCode).toBe(400);
+    expect(res.response.errorInfo.code).toBe(9510);
+  });
+
+  test('25. /register/tempEmployee rejects an already-existing employee with 1511', async () => {
+    const first = await registerTemp('T_DUP_01');
+    expect(first.statusCode).toBe(200);
+    const second = await registerTemp('T_DUP_01');
+    expect(second.statusCode).toBe(400);
+    expect(second.response.errorInfo.code).toBe(1511);
+  });
+
+  test('26. /register/biometric surfaces vision (1502) and duplicate (1511) enrollment failures', async () => {
+    test.skip(!IS_MOCK, 'Requires enrollment fault injection');
+    const reg = await registerTemp('T_ENROLL_01');
+    expect(reg.statusCode).toBe(200);
+
+    const vision = await client.send('/register/biometric', {
+      employeeId: 'T_ENROLL_01',
+      loginCorrelationID: reg.correlationID,
+      simulateVisionError: true,
+    });
+    expect(vision.statusCode).toBe(400);
+    expect(vision.response.errorInfo.code).toBe(1502);
+
+    const duplicate = await client.send('/register/biometric', {
+      employeeId: 'T_ENROLL_01',
+      loginCorrelationID: reg.correlationID,
+      simulateDuplicateTemp: true,
+    });
+    expect(duplicate.statusCode).toBe(400);
+    expect(duplicate.response.errorInfo.code).toBe(1511);
+  });
+
+  test('27. /register/barcode rejects malformed PIN (9510) and unknown employee (6500)', async () => {
+    const badPin = await client.send('/register/barcode', { employeeId: 'rt00001', pin: '12ab', validity: 300 });
+    expect(badPin.statusCode).toBe(400);
+    expect(badPin.response.errorInfo.code).toBe(9510);
+
+    const unknown = await client.send('/register/barcode', { employeeId: 'unknown_999', pin: '4354', validity: 300 });
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.response.errorInfo.code).toBe(6500);
+  });
+
+  test('28. /notify/bio-camera rejects an invalid action with 9510', async () => {
+    const res = await client.send('/notify/bio-camera', { clientId: 'pos-01', action: 'TOGGLE' });
+    expect(res.statusCode).toBe(400);
+    expect(res.response.errorInfo.code).toBe(9510);
+  });
+
+  test('29. /setConfiguration rejects an empty configuration payload', async () => {
+    const res = await client.send('/setConfiguration', { configurations: {} });
+    expect(res.statusCode).toBe(400);
+    expect(res.response.errorInfo.code).toBe(9500);
+  });
+
+  test('30. Successful logins are written to SecurityLog with statusCode 200 (audit trail)', async () => {
+    test.skip(!IS_MOCK, 'Requires mock state inspection');
+    const res = await client.send('/authenticate/credentials', {
+      employeeId: 'rt00001',
+      password: 'SecretPassword123',
+      isLogin: true,
+    });
+    expect(res.statusCode).toBe(200);
+    const state = await inspectMockState();
+    const entry = state.securityLogs.find((l: any) => l.correlationId === res.correlationID);
+    expect(entry).toBeTruthy();
+    expect(entry.statusCode).toBe(200);
+    expect(entry.actionPerformed).toBe('/authenticate/credentials');
   });
 });

@@ -14,22 +14,31 @@ export interface AgentEnvelope {
   [key: string]: any;
 }
 
+/** Parse a frame, ignoring non-JSON so one bad frame can't throw inside a listener. */
+function parseFrame(raw: WebSocket.RawData): AgentEnvelope | null {
+  try {
+    return JSON.parse(raw.toString());
+  } catch {
+    return null;
+  }
+}
+
+async function control(path: string, init?: RequestInit): Promise<any> {
+  const res = await fetch(`${HTTP_CONTROL_URL}${path}`, init);
+  if (!res.ok) {
+    throw new Error(`Mock control call ${path} failed: HTTP ${res.status}`);
+  }
+  return res.json().catch(() => null);
+}
+
 export class AgentWsClient {
   private ws!: WebSocket;
-  private messages: AgentEnvelope[] = [];
 
   async connect(): Promise<void> {
     this.ws = new WebSocket(WS_URL);
     await new Promise<void>((resolve, reject) => {
       this.ws.once('open', () => resolve());
       this.ws.once('error', (err) => reject(err));
-    });
-    this.ws.on('message', (raw) => {
-      try {
-        this.messages.push(JSON.parse(raw.toString()));
-      } catch {
-        // ignore non-json frames
-      }
     });
   }
 
@@ -53,8 +62,8 @@ export class AgentWsClient {
       }, timeoutMs);
 
       const listener = (raw: WebSocket.RawData) => {
-        const parsed: AgentEnvelope = JSON.parse(raw.toString());
-        if (parsed.correlationID === correlationID) {
+        const parsed = parseFrame(raw);
+        if (parsed && parsed.correlationID === correlationID) {
           // Skip intermediate 1500 pending frames if waiting for final decision unless requested
           if (parsed.response?.errorInfo?.code === 1500 && !payload?.expectInterimOnly) {
             return;
@@ -85,8 +94,8 @@ export class AgentWsClient {
       }, timeoutMs);
 
       const listener = (raw: WebSocket.RawData) => {
-        const parsed: AgentEnvelope = JSON.parse(raw.toString());
-        if (parsed.correlationID === correlationID) {
+        const parsed = parseFrame(raw);
+        if (parsed && parsed.correlationID === correlationID) {
           collected.push(parsed);
           if (parsed.response?.errorInfo?.code !== 1500) {
             clearTimeout(timer);
@@ -110,21 +119,19 @@ export class AgentWsClient {
 
 export async function resetMockState(): Promise<void> {
   if (!IS_MOCK) return;
-  await fetch(`${HTTP_CONTROL_URL}/__test/reset`, { method: 'POST' });
+  await control('/__test/reset', { method: 'POST' });
 }
 
 export async function setMockState(patch: Record<string, any>): Promise<any> {
   if (!IS_MOCK) return;
-  const res = await fetch(`${HTTP_CONTROL_URL}/__test/state`, {
+  return control('/__test/state', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   });
-  return res.json();
 }
 
 export async function inspectMockState(): Promise<any> {
   if (!IS_MOCK) return null;
-  const res = await fetch(`${HTTP_CONTROL_URL}/__test/inspect`);
-  return res.json();
+  return control('/__test/inspect');
 }

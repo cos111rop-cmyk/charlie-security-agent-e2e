@@ -214,6 +214,7 @@ function logAudit(
     state.securityLogs.push({
       correlationId: correlationID,
       actionPerformed: path,
+      statusCode,
       appId: 'StoreOS',
       employeeId,
       storeId: state.config.store_id,
@@ -226,6 +227,7 @@ function logAudit(
     state.errorLogs.push({
       correlationId: correlationID,
       actionPerformed: path,
+      statusCode,
       employeeId,
       errorCode: String(errorCode),
       errorMessage,
