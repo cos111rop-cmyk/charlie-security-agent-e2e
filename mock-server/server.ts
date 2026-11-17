@@ -165,6 +165,24 @@ function seedInitialData() {
     lastRefresh: now - 7200_000,
   });
 
+  // Temporary employee that can log in with credentials (exercises sponsorId in userInfo)
+  state.users.set('temp_emp_01', {
+    employeeId: 'temp_emp_01',
+    password: 'TempPassword123',
+    firstName: 'Taylor',
+    lastName: 'Temp',
+    isBiometricRegistered: true,
+    uuid: 'temp-uuid-0001',
+    digital_twin_status: 'clear',
+    digital_twin_pairs: [],
+    last_twin_check_at: null,
+    isTempEmployee: true,
+    sponserId: 'rt00001',
+    profileExpiryTimestamp: now + 86400_000,
+    firstLogin: now - 10000,
+    lastRefresh: now - 5000,
+  });
+
   // Pre-seed a successful login correlationID for /register/biometric tests
   state.securityLogs.push({
     correlationId: 'valid-login-cid-001',
@@ -494,6 +512,23 @@ wss.on('connection', (ws: WebSocket) => {
             actionResult: { code: 950, message: 'Generic Error' },
             errorInfo: { code: 9524, message: 'Local database error' },
           }, employeeId || '');
+        }
+
+        if (payload.simulateHangMs) {
+          // Keeps the transaction in flight so /terminate/transaction can cancel it.
+          // A cancelled transaction is dropped without a response.
+          setTimeout(() => {
+            const tx = state.activeTransactions.get(correlationID);
+            if (!tx || tx.cancelled) {
+              state.activeTransactions.delete(correlationID);
+              return;
+            }
+            reply(200, {
+              actionResult: { code: 102, message: 'Face Authenticated' },
+              credentialType: 'biometric',
+            }, employeeId || '', { modelUsed: 'mbfv1' });
+          }, Number(payload.simulateHangMs));
+          return;
         }
 
         if (!state.cameraEnabled && !state.config.DisableCamera) {
@@ -856,7 +891,7 @@ wss.on('connection', (ws: WebSocket) => {
             errorInfo: { code: 9503, message: 'Invalid correlationID' },
           });
         }
-        state.activeTransactions.delete(targetCorrelationID);
+        state.activeTransactions.get(targetCorrelationID)!.cancelled = true;
         return reply(200, {
           actionResult: { code: 900, message: 'Operation Success' },
         });

@@ -5,6 +5,7 @@ import {
   setMockState,
   inspectMockState,
   IS_MOCK,
+  CAN_MUTATE,
 } from './ws-client';
 
 test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
@@ -97,6 +98,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   // 3. TEMP EMPLOYEE REGISTRATION & BIOMETRIC ENROLLMENT
   // =========================================================================
   test('06. /register/tempEmployee creates temporary profile and allows biometric enrollment with its registration correlationID', async () => {
+    test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
     const tempId = 'T005900099';
     const reg = await client.send('/register/tempEmployee', {
       employeeId: tempId,
@@ -240,6 +242,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   // 5. BARCODE GENERATION & AUTHENTICATION (/register/barcode, /authenticate/barcode)
   // =========================================================================
   test('12. /register/barcode and /authenticate/barcode enforce 13-char BI prefix, PIN, case-insensitivity, and employeeId match', async () => {
+    test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
     const reg = await client.send('/register/barcode', {
       employeeId: 'rt00001',
       pin: '4354',
@@ -282,6 +285,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   });
 
   test('13. Expired barcode returns 6522', async () => {
+    test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
     const reg = await client.send('/register/barcode', {
       employeeId: 'rt00001',
       pin: '4354',
@@ -345,6 +349,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   });
 
   test('17. /setConfiguration updates flags and triggers internal self-restart on critical keys', async () => {
+    test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
     const res = await client.send('/setConfiguration', {
       configurations: {
         FallBackAuthWithPinEnabled: 'N',
@@ -379,6 +384,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   });
 
   test('20. /forgetMe wipes user profile from cache and subsequent lookups return 6500', async () => {
+    test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
     const del = await client.send('/forgetMe', {
       employeeId: 'rt00001',
       deleteFaceId: 'true',
@@ -503,6 +509,7 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
   });
 
   test('25. /register/tempEmployee rejects an already-existing employee with 1511', async () => {
+    test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
     const first = await registerTemp('T_DUP_01');
     expect(first.statusCode).toBe(200);
     const second = await registerTemp('T_DUP_01');
@@ -567,5 +574,133 @@ test.describe('Charlie StoreOS Security Agent - Full End-to-End Suite', () => {
     expect(entry).toBeTruthy();
     expect(entry.statusCode).toBe(200);
     expect(entry.actionPerformed).toBe('/authenticate/credentials');
+  });
+
+  // =========================================================================
+  // 9. IN-FLIGHT TRANSACTIONS, TOKENS, TEMP PROFILES & SPONSOR LOGIN
+  // =========================================================================
+  test('31. /terminate/transaction cancels an in-flight transaction and returns 200', async () => {
+    test.skip(!IS_MOCK, 'Requires a deterministic in-flight transaction');
+    const hungId = `e2e-hung-${Date.now()}`;
+    const pending = client.send(
+      '/authenticate/biometric',
+      { employeeId: 'rt00001', uiDelay: 0, simulateHangMs: 1500 },
+      hungId,
+      2500
+    );
+    const settled = pending.then(
+      (r) => ({ ok: true as const, r }),
+      (e) => ({ ok: false as const, e })
+    );
+
+    const term = await client.send('/terminate/transaction', { targetCorrelationID: hungId });
+    expect(term.statusCode).toBe(200);
+    expect(term.response.actionResult.code).toBe(900);
+
+    // The cancelled transaction must never produce a success frame
+    const outcome = await settled;
+    expect(outcome.ok).toBe(false);
+  });
+
+  test('32. A transaction that is not terminated completes normally after a delay', async () => {
+    test.skip(!IS_MOCK, 'Requires a deterministic in-flight transaction');
+    const res = await client.send(
+      '/authenticate/biometric',
+      { employeeId: 'rt00001', uiDelay: 0, simulateHangMs: 300 },
+      undefined,
+      3000
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.response.actionResult.code).toBe(102);
+  });
+
+  test('33. /authenticate/biometric with multiple faces requires secondary verification (1512)', async () => {
+    test.skip(!IS_MOCK, 'Requires vision fault injection');
+    const res = await client.send('/authenticate/biometric', {
+      employeeId: 'rt00001',
+      uiDelay: 0,
+      simulateMultipleFaces: true,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.response.errorInfo.code).toBe(1512);
+  });
+
+  test('34. /user/token validates input (9510), unknown user (6500) and IDP outage (1510)', async () => {
+    const missing = await client.send('/user/token', {});
+    expect(missing.statusCode).toBe(400);
+    expect(missing.response.errorInfo.code).toBe(9510);
+
+    const unknown = await client.send('/user/token', { employeeId: 'unknown_999', tokenType: ['PING'] });
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.response.errorInfo.code).toBe(6500);
+
+    test.skip(!IS_MOCK, 'IDP outage requires fault injection');
+    await setMockState({ idpDown: true });
+    const idpDown = await client.send('/user/token', { employeeId: 'rt00001', tokenType: ['PING'] });
+    expect(idpDown.statusCode).toBe(400);
+    expect(idpDown.response.errorInfo.code).toBe(1510);
+  });
+
+  test('35. Temp employee with a valid profile authenticates biometrically after enrollment', async () => {
+    test.skip(!CAN_MUTATE, 'Mutates live agent data; set ALLOW_LIVE_MUTATIONS=true to run');
+    const reg = await client.send('/register/tempEmployee', {
+      employeeId: 'T_VALID_01',
+      consentGiven: true,
+      firstName: 'Valid',
+      familyName: 'Profile',
+      sponserId: 'rt00001',
+      profileExpiryTimestamp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    expect(reg.statusCode).toBe(200);
+    const enroll = await client.send('/register/biometric', {
+      employeeId: 'T_VALID_01',
+      loginCorrelationID: reg.correlationID,
+    });
+    expect(enroll.statusCode).toBe(200);
+    const auth = await client.send('/authenticate/biometric', { employeeId: 'T_VALID_01', uiDelay: 0 });
+    expect(auth.statusCode).toBe(200);
+    expect(auth.response.actionResult.code).toBe(102);
+  });
+
+  test('36. Temp employee with an expired profile is rejected with 1506', async () => {
+    test.skip(!IS_MOCK, 'Requires an already-expired profile');
+    const reg = await client.send('/register/tempEmployee', {
+      employeeId: 'T_EXPIRED_01',
+      consentGiven: true,
+      firstName: 'Expired',
+      familyName: 'Profile',
+      sponserId: 'rt00001',
+      profileExpiryTimestamp: Math.floor(Date.now() / 1000) - 60,
+    });
+    expect(reg.statusCode).toBe(200);
+    const enroll = await client.send('/register/biometric', {
+      employeeId: 'T_EXPIRED_01',
+      loginCorrelationID: reg.correlationID,
+    });
+    expect(enroll.statusCode).toBe(200);
+    const auth = await client.send('/authenticate/biometric', { employeeId: 'T_EXPIRED_01', uiDelay: 0 });
+    expect(auth.statusCode).toBe(400);
+    expect(auth.response.errorInfo.code).toBe(1506);
+  });
+
+  test('37. Temp employee credential login returns sponsorId only when isLogin=true', async () => {
+    test.skip(!IS_MOCK, 'Requires seeded temp employee with credentials');
+    const login = await client.send('/authenticate/credentials', {
+      employeeId: 'temp_emp_01',
+      password: 'TempPassword123',
+      isLogin: true,
+      isTempEmployee: true,
+    });
+    expect(login.statusCode).toBe(200);
+    expect(login.response.userInfo.sponsorId).toBe('rt00001');
+
+    const check = await client.send('/authenticate/credentials', {
+      employeeId: 'temp_emp_01',
+      password: 'TempPassword123',
+      isLogin: false,
+      isTempEmployee: true,
+    });
+    expect(check.statusCode).toBe(200);
+    expect(check.response.userInfo.sponsorId).toBeUndefined();
   });
 });

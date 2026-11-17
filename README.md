@@ -2,7 +2,7 @@
 
 Portable, self-contained TypeScript + Playwright WebSocket E2E test suite covering every endpoint, error code, UI guidance translation, and resilience scenario in the **Charlie StoreOS Security Agent** specification.
 
-## What's Covered (23 E2E Scenarios)
+## What's Covered (37 E2E Scenarios)
 - **Protocol & Audit Logging**: JSON envelope (`correlationID`, `path`, `statusCode`, `timeTaken`, `processingMs`), `/healthCheck` exclusion from `SecurityLog`, and failure routing to `ErrorLog`.
 - **All 15 WebSocket Endpoints**:
   - `/healthCheck` & `/healthStatusUpdate`
@@ -15,7 +15,7 @@ Portable, self-contained TypeScript + Playwright WebSocket E2E test suite coveri
   - `/user/token` (`PING` & `SM` token retrieval and auto-refresh)
   - `/notify/bio-camera` (`ON`/`OFF` hardware state & `9520` guard)
   - `/setConfiguration` (dynamic updates & self-restart on critical keys)
-  - `/terminate/transaction` (`9503` invalid correlationID validation)
+  - `/terminate/transaction` (`9503` invalid correlationID validation, cancelling an in-flight transaction)
   - `/uploadLogs` (`error`, `info`, `debug`, `all` delta sync)
   - `/forgetMe` (cache wipe + UUID revocation)
 - **Advanced Edge & Resilience Modes**:
@@ -31,10 +31,16 @@ Portable, self-contained TypeScript + Playwright WebSocket E2E test suite coveri
 npm install
 npm test
 ```
-Playwright automatically boots the local WebSocket mock agent on `ws://127.0.0.1:8080`, executes all 23 tests, and shuts it down.
+Playwright automatically boots the local WebSocket mock agent on `ws://127.0.0.1:8080`, executes all 37 tests, and shuts it down.
 
 ### 2. Run Against a Live StoreOS Ubuntu 22 Security Agent
 ```bash
 USE_MOCK_AGENT=false AGENT_WS_URL=ws://<storeos-terminal-ip>:8080 npm test
 ```
 *(Tests marked `test.skip(!IS_MOCK, ...)` automatically skip fault-injection hooks that require the mock control plane while running all live endpoint assertions.)*
+
+**Live runs are read-safe by default.** Tests that create, change or delete data on the agent (temp registration, barcode creation, `/setConfiguration`, `/forgetMe`) are skipped against a live agent. Only set `ALLOW_LIVE_MUTATIONS=true` on a disposable test terminal:
+```bash
+USE_MOCK_AGENT=false ALLOW_LIVE_MUTATIONS=true AGENT_WS_URL=ws://<ip>:8080 npm test
+```
+On Windows PowerShell, set the variables first (`$env:USE_MOCK_AGENT='false'; $env:AGENT_WS_URL='ws://<ip>:8080'`) and then run `npm test`.
