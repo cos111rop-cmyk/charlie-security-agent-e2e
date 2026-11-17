@@ -10,7 +10,8 @@ export default defineConfig({
   },
   fullyParallel: false,
   workers: 1,
-  retries: process.env.CI ? 1 : 0,
+  // No retries: a retry would hide order-dependent or flaky tests.
+  retries: 0,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL: process.env.AGENT_WS_URL || 'ws://127.0.0.1:8080',
