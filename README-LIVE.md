@@ -13,7 +13,7 @@ Each test carries a tag: `@live` (in both suites) or `@live-mutating` (data-chan
 
 * **Node.js 20 or later** and npm. From the repository root run `npm ci` once.
 * **Network access** from the machine running the tests to the agent's WebSocket port (default `8080`).
-* **The agent's address** in `AGENT_WS_URL`, for example `ws://<terminal-ip>:8080`. The live suites refuse to start without it.
+* **The agent's address** in `AGENT_WS_URL`, for example `ws://<terminal-ip>:8080`. `<terminal-ip>` (and `<disposable-terminal-ip>` below) is a placeholder: replace it with the agent's real address, for example `ws://192.0.2.10:8080`. The live suites refuse to start without it.
 * **Test accounts on the agent.** The tests use fixed test data; create it on the terminal (or adjust the IDs in the tests) before running:
 
 | Account | Needed by | What it must be |
@@ -38,6 +38,14 @@ $env:AGENT_WS_URL = 'ws://<terminal-ip>:8080'
 npm run test:live
 ```
 
+Windows Command Prompt (one line, no space before `&&`, and no `<` `>` around the address, because Command Prompt treats them as redirection):
+
+```bat
+set AGENT_WS_URL=ws://REAL-ADDRESS:8080&& npm run test:live
+```
+
+In Command Prompt the variable stays set in that window, so later runs there reuse it, until you clear it with `set AGENT_WS_URL=`.
+
 These tests create and delete no records, but some do change state on the agent:
 
 * **Last-login state:** tests `03` and `08` log in as `rt00001` with `isLogin: true`, which updates that account's stored login type and reference.
@@ -50,6 +58,12 @@ The remaining tests only send requests that the agent must reject, or that read 
 
 ```bash
 AGENT_WS_URL=ws://<disposable-terminal-ip>:8080 npm run test:live:mutating
+```
+
+Windows Command Prompt:
+
+```bat
+set AGENT_WS_URL=ws://REAL-DISPOSABLE-ADDRESS:8080&& npm run test:live:mutating
 ```
 
 On top of the run above, this suite:
